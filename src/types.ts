@@ -34,10 +34,22 @@ export interface TradeDecision {
 export interface VerificationResult {
   route: "sentinel" | "rv" | "pipeline";
   finalVerdict: Verdict;
+  /**
+   * Fail-closed semantics: ALLOW => execute (simulated). BLOCK or UNCERTAIN => do NOT trade.
+   * We never act on an unresolved verdict — uncertainty is treated conservatively.
+   */
   sentinel?: {
     verdict: Verdict;
     confidence: number;
     reason: string;
+    /** Cryptographic proof from Sentinel — the evidence anchor for the block/allow. */
+    attestation?: {
+      prepared?: boolean;
+      issued?: boolean;
+      schemaUid?: string;
+      claimHash?: string;
+      evidenceHash?: string;
+    };
   };
   rv?: {
     verdict: Verdict;
@@ -47,6 +59,9 @@ export interface VerificationResult {
       severity: "low" | "medium" | "high" | "critical";
       explanation: string;
     }>;
+    /** RV verification profile + model count (from /v1/check). */
+    modelCount?: number;
+    profile?: string;
     attestation?: {
       type: string;
       hash?: string;

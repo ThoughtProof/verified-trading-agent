@@ -70,12 +70,19 @@ async function runCycle(cycle: number): Promise<void> {
       verification.rv?.objections?.[0]?.explanation ||
       verification.sentinel?.reason ||
       verification.finalVerdict;
-    console.log(`🛑 ${verification.finalVerdict} (${verification.route}) — trade NOT sent`);
+    console.log(`🛑 ${verification.finalVerdict} (${verification.route}) — trade NOT sent [fail-closed]`);
     console.log(`   Why: ${why}`);
     if (verification.rv?.objections?.length) {
       for (const o of verification.rv.objections.slice(0, 3)) {
         console.log(`   • [${o.severity}] ${o.explanation}`);
       }
+    } else if (verification.rv) {
+      console.log(`   RV: ${verification.rv.verdict} (${verification.rv.modelCount ?? "?"} models, profile ${verification.rv.profile ?? "?"})`);
+    }
+    // The cryptographic proof — the evidence anchor for this block.
+    const att = verification.sentinel?.attestation;
+    if (att?.claimHash) {
+      console.log(`   🔏 Sentinel attestation: claim ${att.claimHash.slice(0, 18)}… evidence ${(att.evidenceHash ?? "").slice(0, 18)}… (schema ${(att.schemaUid ?? "").slice(0, 12)}…)`);
     }
   }
 

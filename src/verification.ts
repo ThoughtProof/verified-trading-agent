@@ -29,7 +29,7 @@ function normalizeVerdict(v: unknown): Verdict {
 async function callSentinel(
   decision: TradeDecision,
   apiKey: string,
-): Promise<NonNullable<VerificationResult["sentinel"]> & { attestation?: any }> {
+): Promise<NonNullable<VerificationResult["sentinel"]>> {
   const res = await fetch(SENTINEL_URL, {
     method: "POST",
     headers: { "X-Sentinel-Key": apiKey, "Content-Type": "application/json" },
@@ -44,11 +44,22 @@ async function callSentinel(
     throw new Error(`Sentinel failed (${res.status}): ${await res.text()}`);
   }
   const d = (await res.json()) as Record<string, any>;
+  const att = d.attestation as Record<string, any> | undefined;
   return {
     verdict: normalizeVerdict(d.verdict),
     confidence: Number(d.confidence ?? 0),
     reason: String(d.reasoning ?? ""),
-    attestation: d.attestation,
+    // M2 fix: carry the cryptographic proof through to the record — this is the
+    // evidence anchor that makes "signed, non-refutable verdict" real, not a claim.
+    attestation: att
+      ? {
+          prepared: Boolean(att.prepared),
+          issued: Boolean(att.issued),
+          schemaUid: att.schema_uid,
+          claimHash: att.claim_hash,
+          evidenceHash: att.evidence_hash,
+        }
+      : undefined,
   };
 }
 
@@ -80,6 +91,8 @@ async function callRV(
     confidence: Number(d.confidence ?? 0),
     summary: String(d.summary ?? d.reasoning ?? ""),
     objections,
+    modelCount: typeof d.modelCount === "number" ? d.modelCount : undefined,
+    profile: d.verificationProfile ? String(d.verificationProfile) : undefined,
     attestation: d.attestation
       ? {
           type: String(d.attestation.type ?? "tp"),
@@ -117,17 +130,19 @@ export async function verifyDecision(
     return {
       route: "sentinel",
       finalVerdict: "BLOCK",
-      sentinel: { verdict: sentinel.verdict, confidence: sentinel.confidence, reason: sentinel.reason },
+      sentinel,
       latencyMs: Date.now() - start,
     };
   }
 
   // Routine (low-stakes) decision that passed Sentinel → done.
+  // Note: sentinel.verdict here is ALLOW or UNCERTAIN. UNCERTAIN is fail-closed
+  // downstream (main.ts treats anything != ALLOW as "not executed").
   if (!decision.highStakes) {
     return {
       route: "sentinel",
       finalVerdict: sentinel.verdict,
-      sentinel: { verdict: sentinel.verdict, confidence: sentinel.confidence, reason: sentinel.reason },
+      sentinel,
       latencyMs: Date.now() - start,
     };
   }
@@ -147,7 +162,7 @@ export async function verifyDecision(
   return {
     route: "pipeline",
     finalVerdict,
-    sentinel: { verdict: sentinel.verdict, confidence: sentinel.confidence, reason: sentinel.reason },
+    sentinel,
     rv,
     latencyMs: Date.now() - start,
   };

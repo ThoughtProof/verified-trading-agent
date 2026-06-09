@@ -20,6 +20,10 @@ Most agentic-trading demos show you a bot that (claims to) make money. This one 
 - RV judges the **defensibility of the reasoning**, not market direction.
 - We demonstrate **avoided harm**: "the agent wanted N trades, ThoughtProof blocked M, here's why."
 - Execution is **always simulated** — no real capital, no return claims.
+- **Fail-closed:** ALLOW executes (simulated); BLOCK *or* UNCERTAIN means the trade is not sent. We never act on an unresolved verdict.
+- Every block carries Sentinel's **cryptographic attestation** (claim hash, evidence hash, schema UID) — the verdict is anchored, not asserted.
+
+> **Known limitation (Phase 1):** the RV `/v1/check` endpoint returns a verdict + model count but not the detailed objection list on this key/tier. The rich "why" currently comes from Sentinel's reasoning + attestation. Surfacing RV objections is tracked for Phase 2.
 
 ## Why these specific choices
 
