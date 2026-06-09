@@ -1,0 +1,31 @@
+{
+  "name": "verified-trading-agent",
+  "version": "0.1.0",
+  "description": "An autonomous crypto trading agent that verifies every decision through ThoughtProof before acting. Demonstrates: catastrophic trades blocked because their reasoning didn't hold. Trust for agentic trading.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "demo": "tsx src/main.ts --once",
+    "loop": "tsx src/main.ts",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "ai-agent",
+    "thoughtproof",
+    "verification",
+    "agentic-trading",
+    "x402",
+    "erc-8004",
+    "kimi"
+  ],
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
