@@ -109,6 +109,11 @@ function buildFeedbackURI(record: DecisionRecord): string {
  * Compute a feedback hash (SHA-256) of the decision record.
  * This anchors the on-chain entry to the specific off-chain evidence. Anyone can
  * verify: hash(record) === on-chain feedbackHash.
+ *
+ * STABILITY NOTE: Only deterministic, decision-time fields are included.
+ * Do NOT add enrichments (Polymarket data changes with cache TTL),
+ * market snapshots (price drift), or any post-hoc computed field.
+ * The hash must be reproducible from the JSONL record alone.
  */
 function computeFeedbackHash(record: DecisionRecord): string {
   const canonical = JSON.stringify({

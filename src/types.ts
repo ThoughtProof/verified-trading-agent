@@ -72,7 +72,31 @@ export interface VerificationResult {
   latencyMs: number;
 }
 
-import type { EnrichmentResults } from "./enrichments.js";
+// ─── Enrichment Types (kept here to avoid circular import with enrichments.ts) ─
+
+/** Results from all pot-sdk enrichments for one decision cycle. */
+export interface EnrichmentResults {
+  /** Full Polymarket enrichment result. Typed as Record to avoid importing
+   *  @pot-sdk2/polymarket in the core types file — the actual PolymarketEnrichment
+   *  type is used in enrichments.ts. The JSONL serializes the full object. */
+  polymarket?: {
+    available: boolean;
+    modifiesVerdict: boolean;
+    verdictAdjustment: "strengthen" | "weaken" | "flag" | "none";
+    contextForSynthesis: string;
+    result?: {
+      primarySignal?: {
+        probability: number;
+        strength: string;
+        market: { question: string };
+      } | null;
+      alignment?: string;
+      collectiveConfidence?: number;
+    } | null;
+  };
+  friend?: { critique: string; recurring: boolean; sessionId: string } | null;
+  graph?: { contradictions: number; critique: string } | null;
+}
 
 /** One full decision cycle, persisted to the tracking log. */
 export interface DecisionRecord {

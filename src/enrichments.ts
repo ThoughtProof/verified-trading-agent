@@ -13,16 +13,7 @@
 
 import { enrichVerification, DEFAULT_CONFIG } from "@pot-sdk2/polymarket";
 import type { PolymarketEnrichment } from "@pot-sdk2/polymarket";
-import type { TradeDecision, VerificationResult } from "./types.js";
-
-// ─── Enrichment Results (appended to DecisionRecord) ──────────────────────────
-
-export interface EnrichmentResults {
-  polymarket?: PolymarketEnrichment;
-  /** Future enrichments (friend, graph, pay) go here */
-  friend?: { critique: string; recurring: boolean; sessionId: string } | null;
-  graph?: { contradictions: number; critique: string } | null;
-}
+import type { TradeDecision, VerificationResult, Verdict, EnrichmentResults } from "./types.js";
 
 // ─── Polymarket Enrichment ────────────────────────────────────────────────────
 
@@ -32,6 +23,8 @@ export interface EnrichmentResults {
  */
 export async function enrichWithPolymarket(
   decision: TradeDecision,
+  verdict: Verdict,
+  confidence: number,
 ): Promise<PolymarketEnrichment | null> {
   try {
     // Use keyword search — we don't have a specific Polymarket conditionId
@@ -40,8 +33,8 @@ export async function enrichWithPolymarket(
     const enriched = await enrichVerification(
       {
         claim,
-        modelVerdict: "ALLOW", // We haven't verified yet — pass ALLOW as baseline
-        modelConfidence: 0.5, // Neutral prior
+        modelVerdict: verdict,
+        modelConfidence: confidence,
         stakeLevel: decision.highStakes ? "high" : "medium",
       },
       {
@@ -72,9 +65,9 @@ export function logEnrichments(results: EnrichmentResults): void {
       console.log(
         `   📊 Polymarket: "${signal.market.question}" → ${pct}% YES, ${signal.strength} signal, adjustment: ${adj}`,
       );
-      if (pm.result.alignment !== "neutral") {
+      if (pm.result.alignment && pm.result.alignment !== "neutral") {
         console.log(
-          `      Alignment: ${pm.result.alignment} (composite confidence: ${(pm.result.collectiveConfidence * 100).toFixed(1)}%)`,
+          `      Alignment: ${pm.result.alignment} (composite confidence: ${((pm.result.collectiveConfidence ?? 0) * 100).toFixed(1)}%)`,
         );
       }
     } else {
@@ -120,12 +113,37 @@ export function logEnrichments(results: EnrichmentResults): void {
  */
 export async function runEnrichments(
   decision: TradeDecision,
-  _verification: VerificationResult,
+  verification: VerificationResult,
 ): Promise<EnrichmentResults> {
   const results: EnrichmentResults = {};
 
   // 1. Polymarket — crowd intelligence (no API key needed, public APIs)
-  results.polymarket = (await enrichWithPolymarket(decision)) ?? undefined;
+  //    Uses the real verification verdict + confidence from Sentinel/RV.
+  const sentinelConf = verification.sentinel?.confidence ?? 0;
+  const rvConf = verification.rv?.confidence ?? 0;
+  const confidence = rvConf > 0 ? rvConf : sentinelConf > 0 ? sentinelConf : 0.5;
+  const pmResult = await enrichWithPolymarket(decision, verification.finalVerdict, confidence);
+  if (pmResult) {
+    results.polymarket = {
+      available: pmResult.available,
+      modifiesVerdict: pmResult.modifiesVerdict,
+      verdictAdjustment: pmResult.verdictAdjustment,
+      contextForSynthesis: pmResult.contextForSynthesis,
+      result: pmResult.result
+        ? {
+            primarySignal: pmResult.result.primarySignal
+              ? {
+                  probability: pmResult.result.primarySignal.probability,
+                  strength: pmResult.result.primarySignal.strength,
+                  market: { question: pmResult.result.primarySignal.market.question },
+                }
+              : null,
+            alignment: pmResult.result.alignment,
+            collectiveConfidence: pmResult.result.collectiveConfidence,
+          }
+        : null,
+    };
+  }
 
   // 2. Friend — persistent memory critic
   // Requires LLM provider. Left as hook for Phase 2+ when we add FRIEND_LLM_KEY.
