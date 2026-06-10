@@ -13,6 +13,7 @@ import { fetchMarketSnapshot, describeMarket } from "./signal.js";
 import { generateTradeDecision } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
+import { ReputationWriter } from "./reputation.js";
 import type { DecisionRecord } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
@@ -20,6 +21,8 @@ const THOUGHTPROOF_API_KEY = process.env.THOUGHTPROOF_API_KEY ?? "";
 const SYMBOL = process.env.SYMBOL ?? "BTCUSDT";
 const MAX_CYCLES = Number(process.env.MAX_CYCLES ?? 0);
 const CYCLE_INTERVAL_SEC = Number(process.env.CYCLE_INTERVAL_SEC ?? 900);
+const PRIVATE_KEY = process.env.REPUTATION_PRIVATE_KEY ?? process.env.PRIVATE_KEY ?? "";
+const AGENT_ID = process.env.AGENT_ID ?? "";
 
 function requireKeys(): void {
   const missing: string[] = [];
@@ -31,9 +34,21 @@ function requireKeys(): void {
   }
 }
 
+/** Build a ReputationWriter if PRIVATE_KEY + AGENT_ID are configured, else null. */
+function initReputation(): ReputationWriter | null {
+  if (!PRIVATE_KEY || !AGENT_ID) {
+    console.log("⚠️  PRIVATE_KEY or AGENT_ID not set — on-chain reputation writes disabled.");
+    return null;
+  }
+  return new ReputationWriter({
+    privateKey: PRIVATE_KEY,
+    agentId: BigInt(AGENT_ID),
+  });
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runCycle(cycle: number): Promise<void> {
+async function runCycle(cycle: number, reputation: ReputationWriter | null): Promise<void> {
   const ts = new Date().toISOString();
   console.log(`\n──────── Cycle ${cycle} · ${ts} ────────`);
 
@@ -89,25 +104,48 @@ async function runCycle(cycle: number): Promise<void> {
   // 5. Track
   const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade };
   recordDecision(record);
+
+  // 6. On-chain reputation (ERC-8004 giveFeedback, SKALE testnet — zero gas)
+  if (reputation) {
+    try {
+      const txHash = await reputation.writeFeedback(record);
+      if (txHash) {
+        console.log(`🔗 On-chain: feedback written → ${txHash.slice(0, 18)}…`);
+      }
+    } catch (err) {
+      // Non-fatal: the core loop must not break because of chain issues.
+      console.error(`⚠️  On-chain write failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+    }
+  }
 }
 
 async function main(): Promise<void> {
   requireKeys();
   const once = process.argv.includes("--once");
+  const reputation = initReputation();
 
   console.log("Verified Trading Agent — Kimi K2.6 reasons, ThoughtProof verifies.");
   console.log(`Symbol: ${SYMBOL} · Mode: ${once ? "single cycle" : "loop"} · Log: ${LOG_PATH}`);
+  if (reputation) {
+    const check = await reputation.verifyAgent();
+    if (check.exists) {
+      console.log(`🔗 ERC-8004 Agent #${reputation.agentId} confirmed (owner: ${check.owner?.slice(0, 10)}…) — reputation writes ON`);
+    } else {
+      console.error(`❌ Agent #${reputation.agentId} not found on-chain. Run: npx tsx scripts/register-agent.ts`);
+      process.exit(1);
+    }
+  }
 
   let cycle = 1;
   const startCount = readDecisions().length;
   cycle = startCount + 1;
 
   if (once) {
-    await runCycle(cycle);
+    await runCycle(cycle, reputation);
   } else {
     while (true) {
       try {
-        await runCycle(cycle);
+        await runCycle(cycle, reputation);
       } catch (err) {
         console.error(`Cycle ${cycle} error:`, err instanceof Error ? err.message : err);
       }

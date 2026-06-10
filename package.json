@@ -20,7 +20,8 @@
     "kimi"
   ],
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "ethers": "^6.16.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

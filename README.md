@@ -59,12 +59,15 @@ ALLOW → execute [SIMULATED]   │   BLOCK → log with reasoning + verdict
       │
       ▼
 runs/decisions.jsonl  (the trust record)
+      │
+      ▼
+ERC-8004 giveFeedback (SKALE, zero-gas)  →  on-chain reputation signal
 ```
 
 ## Roadmap
 
 - **Phase 1 (done):** reason → verify → track loop, live against real APIs.
-- **Phase 1b:** write each verdict on-chain via ERC-8004 `giveFeedback` (SKALE) — turns verdicts into evidence-based agent reputation.
+- **Phase 1b (done):** write each verdict on-chain via ERC-8004 `giveFeedback` (SKALE testnet) — turns verdicts into evidence-based agent reputation. Agent #571 registered, feedback from a separate client wallet (contract enforces "Self-feedback not allowed").
 - **Phase 2:** pot-sdk modules — `polymarket` (crowd-intelligence signal), `friend` (persistent memory critic), `graph`, `pay` (x402 payment verification).
 
 ## License
