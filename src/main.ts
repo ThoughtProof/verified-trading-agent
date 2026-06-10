@@ -69,8 +69,11 @@ async function runCycle(cycle: number, reputation: ReputationWriter | null): Pro
   }
 
   // 3. Verification (ThoughtProof)
+  // describeMarket(market) = the action-free decision situation, so RV's
+  // generator panel can take independent positions before seeing our decision.
+  const marketSituation = describeMarket(market);
   let decision = decision0;
-  let verification = await verifyDecision(decision, THOUGHTPROOF_API_KEY);
+  let verification = await verifyDecision(decision, THOUGHTPROOF_API_KEY, marketSituation);
 
   // 3b. Re-plan on a blocked directional decision (at most once).
   // Bens GOAT point: on UNCERTAIN/BLOCK the agent should do something useful —
@@ -97,7 +100,7 @@ async function runCycle(cycle: number, reputation: ReputationWriter | null): Pro
       );
       // Verify the revised decision (flat is a no-op trade but still recorded
       // as ALLOW by verifyDecision, so the resolution reads correctly).
-      const revisedVerification = await verifyDecision(revised.decision, THOUGHTPROOF_API_KEY);
+      const revisedVerification = await verifyDecision(revised.decision, THOUGHTPROOF_API_KEY, marketSituation);
 
       const resolution: NonNullable<DecisionRecord["replan"]>["resolution"] =
         revised.decision.side === "flat"

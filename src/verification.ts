@@ -66,6 +66,7 @@ async function callSentinel(
 async function callRV(
   decision: TradeDecision,
   apiKey: string,
+  situation?: string,
 ): Promise<NonNullable<VerificationResult["rv"]>> {
   const res = await fetch(RV_URL, {
     method: "POST",
@@ -73,6 +74,18 @@ async function callRV(
     body: JSON.stringify({
       claim: `${decision.action}. Thesis: ${decision.thesis}`,
       context: `Autonomous crypto trading agent, $50k perpetual account. Full reasoning chain: ${decision.reasoning}`,
+      // The decision SITUATION (market data) without the chosen action.
+      // The RV generator panel forms independent positions on this situation
+      // first, then our decision is compared against them — real disagreement,
+      // meaningful mdi. Without it, generators only see a static meta-question
+      // (pot-sdk deliberately hides `output` from generators: out-of-band design).
+      ...(situation
+        ? {
+            situation:
+              `An autonomous crypto trading agent (simulated $50k perpetual account, BTC) must decide each cycle: ` +
+              `go long, go short, or stay flat — and at what leverage. Current market:\n${situation}`,
+          }
+        : {}),
       speed: "standard",
       // Request the ECDSA-signed onchain proof (free — signing only, no extra
       // model cost). Without this the RV verdict carries NO signature and the
@@ -130,10 +143,15 @@ async function callRV(
 /**
  * Verify a trade decision. Sentinel gate first; escalate to RV for high-stakes
  * decisions that survive Sentinel. Returns the merged result.
+ *
+ * `situation` (optional): action-free description of the decision situation
+ * (market snapshot). Passed to RV so its generator panel can form independent
+ * positions before seeing our decision. Use describeMarket(market).
  */
 export async function verifyDecision(
   decision: TradeDecision,
   apiKey: string,
+  situation?: string,
 ): Promise<VerificationResult> {
   const start = Date.now();
 
@@ -172,7 +190,7 @@ export async function verifyDecision(
 
   // High-stakes → escalate to RV adversarial verification.
   // (Sentinel already passed the BLOCK gate above, so only RV can still BLOCK here.)
-  const rv = await callRV(decision, apiKey);
+  const rv = await callRV(decision, apiKey, situation);
 
   // Conservative merge: BLOCK > UNCERTAIN > ALLOW
   const finalVerdict: Verdict =
