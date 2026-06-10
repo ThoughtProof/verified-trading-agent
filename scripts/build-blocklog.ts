@@ -298,7 +298,7 @@ function renderHtml(data: RenderData): string {
 <body>
 <div class="wrap">
   <h1>Verified Trading Agent — Block Log</h1>
-  <p class="sub">An autonomous agent (Kimi K2.6) reasons about BTC trades. Before any leveraged position, <b>ThoughtProof verifies the reasoning</b>. These are the decisions it <b>blocked</b> — each with the objections that sank it, what the agent did next, and a signed verdict.</p>
+  <p class="sub">An autonomous agent (Kimi K2.6) scans the crypto market and reasons about the strongest setups. Before any leveraged position, <b>ThoughtProof verifies the reasoning</b>. These are the decisions it <b>blocked</b> — each with the objections that sank it, what the agent did next, and a signed verdict.</p>
 
   <div class="stats">
     <div class="stat"><div class="n">${data.totalDecisions}</div><div class="l">Decisions verified</div></div>
