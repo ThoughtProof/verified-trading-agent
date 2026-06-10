@@ -2,6 +2,28 @@
 
 export type Verdict = "ALLOW" | "BLOCK" | "UNCERTAIN";
 
+/** Multi-day technical indicators computed from daily klines. */
+export interface Technicals {
+  /** % change over the last 7 daily closes */
+  change7dPct: number;
+  /** % change over the last 14 daily closes */
+  change14dPct: number;
+  /** 7-day simple moving average */
+  sma7: number;
+  /** 30-day simple moving average */
+  sma30: number;
+  /** Current price relative to SMA7 */
+  vsSma7: "above" | "below";
+  /** Current price relative to SMA30 */
+  vsSma30: "above" | "below";
+  /** 14-day RSI (0-100). >70 overbought, <30 oversold. */
+  rsi14: number;
+  /** Consecutive same-direction daily closes (+ up streak, - down streak) */
+  consecutiveCloses: number;
+  /** Trend label derived from SMA structure + multi-day change */
+  trend: "strong_uptrend" | "uptrend" | "ranging" | "downtrend" | "strong_downtrend";
+}
+
 /** A live market snapshot the agent reasons over. */
 export interface MarketSnapshot {
   symbol: string; // e.g. "BTCUSDT"
@@ -11,6 +33,8 @@ export interface MarketSnapshot {
   low24h: number;
   volume24h: number;
   fetchedAt: string; // ISO
+  /** Multi-day technical context (trend, SMA, RSI, candle structure). */
+  technicals?: Technicals;
 }
 
 /** The agent's trade decision (from Kimi K2.6). */
