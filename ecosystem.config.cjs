@@ -7,8 +7,12 @@
 //   pm2 restart verified-trading-agent
 //
 // The agent runs the continuous loop (src/main.ts, no --once), reasoning +
-// verifying one decision every CYCLE_INTERVAL_SEC (set to 7200 = 2h in .env).
-// PM2 keeps it alive across crashes and (with `pm2 startup`) machine reboots.
+// verifying one decision every CYCLE_INTERVAL_SEC (set in .env: 1200=20min
+// until Fri demo, then 3600=1h). PM2 keeps it alive across crashes and (with
+// `pm2 startup`) machine reboots.
+//
+// A second app, blocklog-watcher, rebuilds the HTML block-log whenever the
+// agent appends a decision. Zero cost (local JSONL read + free Binance API).
 
 module.exports = {
   apps: [
@@ -33,6 +37,25 @@ module.exports = {
       time: true,
       out_file: "./runs/pm2-out.log",
       error_file: "./runs/pm2-error.log",
+      merge_logs: true,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
+    {
+      name: "blocklog-watcher",
+      script: "./node_modules/.bin/tsx",
+      args: "scripts/watch-blocklog.ts",
+      cwd: __dirname,
+      interpreter: "none",
+      autorestart: true,
+      restart_delay: 10_000,
+      max_restarts: 50,
+      min_uptime: 30_000,
+      max_memory_restart: "200M",
+      time: true,
+      out_file: "./runs/pm2-watcher-out.log",
+      error_file: "./runs/pm2-watcher-error.log",
       merge_logs: true,
       env: {
         NODE_ENV: "production",
