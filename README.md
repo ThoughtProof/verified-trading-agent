@@ -41,6 +41,25 @@ npm run loop           # continuous (CYCLE_INTERVAL_SEC between cycles)
 
 Every decision is appended to `runs/decisions.jsonl` — the public record.
 
+## Running continuously (30-day autonomous run)
+
+The agent is fully autonomous — no human gives it trade instructions. Kimi
+reasons over live market data each cycle and decides long/short/flat on its own.
+Execution is always simulated; nothing irreversible happens.
+
+For a durable run, use PM2 (keeps it alive across crashes and reboots):
+
+```bash
+pm2 start ecosystem.config.cjs   # starts the loop (CYCLE_INTERVAL_SEC between cycles)
+pm2 logs verified-trading-agent  # watch decisions live
+pm2 save                         # persist process list
+# Reboot survival (run once, needs sudo):
+pm2 startup launchd              # prints the sudo command to paste
+```
+
+A watchdog (`scripts/watchdog.py`) checks the process is online, not crash-looping,
+and producing cycles — staying silent when healthy and alerting only on trouble.
+
 ## Architecture
 
 ```
