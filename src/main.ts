@@ -14,6 +14,7 @@ import { generateTradeDecision } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
 import { ReputationWriter } from "./reputation.js";
+import { runEnrichments, logEnrichments } from "./enrichments.js";
 import type { DecisionRecord } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
@@ -101,11 +102,15 @@ async function runCycle(cycle: number, reputation: ReputationWriter | null): Pro
     }
   }
 
-  // 5. Track
-  const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade };
+  // 5. pot-sdk enrichments (polymarket crowd-intel, friend memory, graph)
+  const enrichments = await runEnrichments(decision, verification);
+  logEnrichments(enrichments);
+
+  // 6. Track
+  const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade, enrichments };
   recordDecision(record);
 
-  // 6. On-chain reputation (ERC-8004 giveFeedback, SKALE testnet — zero gas)
+  // 7. On-chain reputation (ERC-8004 giveFeedback, SKALE testnet — zero gas)
   if (reputation) {
     try {
       const txHash = await reputation.writeFeedback(record);

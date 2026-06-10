@@ -72,6 +72,8 @@ export interface VerificationResult {
   latencyMs: number;
 }
 
+import type { EnrichmentResults } from "./enrichments.js";
+
 /** One full decision cycle, persisted to the tracking log. */
 export interface DecisionRecord {
   timestamp: string; // ISO
@@ -83,4 +85,6 @@ export interface DecisionRecord {
   outcome: "EXECUTED" | "BLOCKED" | "SKIPPED";
   /** Whether the decision was a flat/no-op (agent chose not to trade). */
   noTrade: boolean;
+  /** pot-sdk enrichments (polymarket, friend, graph, pay). */
+  enrichments?: EnrichmentResults;
 }

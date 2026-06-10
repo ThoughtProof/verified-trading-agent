@@ -58,7 +58,14 @@ ThoughtProof verify
 ALLOW → execute [SIMULATED]   │   BLOCK → log with reasoning + verdict
       │
       ▼
-runs/decisions.jsonl  (the trust record)
+pot-sdk enrichments
+   ├─ @pot-sdk2/polymarket (crowd-intelligence calibration)
+   ├─ @pot-sdk2/friend (persistent memory critic — Phase 2+)
+   ├─ @pot-sdk2/graph (knowledge-graph contradictions — Phase 2+)
+   └─ @pot-sdk2/pay (x402 payment verification — Phase 3)
+      │
+      ▼
+runs/decisions.jsonl  (the trust record — with enrichments)
       │
       ▼
 ERC-8004 giveFeedback (SKALE, zero-gas)  →  on-chain reputation signal
@@ -68,7 +75,7 @@ ERC-8004 giveFeedback (SKALE, zero-gas)  →  on-chain reputation signal
 
 - **Phase 1 (done):** reason → verify → track loop, live against real APIs.
 - **Phase 1b (done):** write each verdict on-chain via ERC-8004 `giveFeedback` (SKALE testnet) — turns verdicts into evidence-based agent reputation. Agent #571 registered, feedback from a separate client wallet (contract enforces "Self-feedback not allowed").
-- **Phase 2:** pot-sdk modules — `polymarket` (crowd-intelligence signal), `friend` (persistent memory critic), `graph`, `pay` (x402 payment verification).
+- **Phase 2 (polymarket done, friend/graph/pay hooked):** pot-sdk modules integrated into decision loop. `@pot-sdk2/polymarket` runs live (crowd-intelligence calibration, public APIs, no key needed). `friend` (persistent memory critic), `graph` (knowledge-graph contradictions), and `pay` (x402 payment verification) are wired as hooks — activate when LLM provider keys / x402 are configured.
 
 ## License
 
