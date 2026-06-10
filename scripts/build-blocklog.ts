@@ -213,8 +213,13 @@ function renderEntry(e: BlockEntry): string {
       : `<div class="muted">No objections recorded (decision blocked pre-RV-fix or at Sentinel gate).</div>`;
 
   const attHash = rv?.attestation?.hash ?? sent?.attestation?.claimHash;
+  const rvSig = rv?.attestation?.signature
+    ? ` · RV proof ${esc(shortHash(rv.attestation.hash))} sig ${esc(shortHash(rv.attestation.signature))}${rv.attestation.signer ? ` (signer ${esc(shortHash(rv.attestation.signer))})` : ""}`
+    : rv?.attestation?.hash
+      ? ` · RV ${esc(shortHash(rv.attestation.hash))}`
+      : "";
   const attRow = attHash
-    ? `<div class="att">🔏 Signed verdict · claim ${esc(shortHash(sent?.attestation?.claimHash))} · evidence ${esc(shortHash(sent?.attestation?.evidenceHash))}${rv?.attestation?.hash ? ` · RV ${esc(shortHash(rv.attestation.hash))}` : ""}</div>`
+    ? `<div class="att">🔏 Signed verdict · claim ${esc(shortHash(sent?.attestation?.claimHash))} · evidence ${esc(shortHash(sent?.attestation?.evidenceHash))}${rvSig}</div>`
     : "";
 
   const conf = rv?.confidence != null ? `${Math.round(rv.confidence * 100)}%` : "—";
@@ -310,7 +315,7 @@ function renderHtml(data: RenderData): string {
   ${blocksHtml}
 
   <footer>
-    Generated ${esc(data.generatedAt)} · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).
+    Generated ${esc(data.generatedAt)} · worst single position drawdown −${data.worstSingle}% of equity · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).
   </footer>
 </div>
 </body>

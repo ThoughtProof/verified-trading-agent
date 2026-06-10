@@ -31,8 +31,12 @@ export function readDecisions(): DecisionRecord[] {
 
 /** Aggregate the trust-metric stats — avoided harm, never returns. */
 export function computeStats(records: DecisionRecord[]) {
-  const trades = records.filter((r) => !r.noTrade);
-  const blocked = trades.filter((r) => r.outcome === "BLOCKED");
+  // A "trade attempt" = the agent WANTED a directional position at some point
+  // in the cycle. A blocked→re-planned-to-flat cycle is still an attempt (the
+  // original decision was directional and got blocked) — without counting it,
+  // the block rate understates exactly the cycles the verifier caught.
+  const trades = records.filter((r) => !r.noTrade || r.replan != null);
+  const blocked = trades.filter((r) => r.outcome === "BLOCKED" || r.replan != null);
   const executed = trades.filter((r) => r.outcome === "EXECUTED");
   return {
     totalCycles: records.length,
@@ -41,7 +45,7 @@ export function computeStats(records: DecisionRecord[]) {
     blocked: blocked.length,
     blockRate: trades.length ? blocked.length / trades.length : 0,
     worstBlocks: blocked
-      .filter((r) => r.verification.rv?.objections?.length)
+      .filter((r) => (r.replan?.original.verification.rv ?? r.verification.rv)?.objections?.length)
       .slice(0, 5),
   };
 }

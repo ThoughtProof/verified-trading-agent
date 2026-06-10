@@ -21,6 +21,13 @@
 // We walk REAL Binance hourly candles from the block timestamp forward to now
 // and report the worst the position would have gotten (max adverse excursion)
 // plus where it stands now (or at liquidation).
+//
+// Known approximation (acceptable, documented): the first hourly candle starts
+// at the top of the hour CONTAINING the block timestamp, so up to 59 minutes of
+// price action from BEFORE the block can leak into the first candle's high/low.
+// On hourly granularity this slightly over- or under-states the worst case by
+// at most one candle's intra-hour range — fine for a showcase, not for risk
+// accounting. Switch to 1m klines if precision ever matters.
 
 const BINANCE_KLINES = "https://api.binance.com/api/v3/klines";
 

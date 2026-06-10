@@ -90,6 +90,8 @@ export interface VerificationResult {
       type: string;
       hash?: string;
       signature?: string;
+      /** Ethereum address that signed the proof (verify via ecrecover / GET /v1/signer). */
+      signer?: string;
       receiptId?: string;
     };
   };

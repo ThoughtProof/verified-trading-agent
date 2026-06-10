@@ -89,17 +89,25 @@ function buildTags(verification: VerificationResult): {
  * Build a feedbackURI pointing to the decision context.
  * For now, this is a data URI with the minimal record summary.
  * In Phase 2 this could be an IPFS/Arweave link to the full JSONL entry.
+ *
+ * For re-planned records the summary describes the ORIGINAL blocked decision
+ * (which the on-chain score anchors) plus the replan resolution — so the URI
+ * never contradicts the score it accompanies.
  */
 function buildFeedbackURI(record: DecisionRecord): string {
+  const anchored = record.replan
+    ? record.replan.original
+    : { decision: record.decision, verification: record.verification };
   const summary = {
     cycle: record.cycle,
     symbol: record.market.symbol,
-    action: record.decision.action,
-    thesis: record.decision.thesis,
-    verdict: record.verification.finalVerdict,
-    route: record.verification.route,
+    action: anchored.decision.action,
+    thesis: anchored.decision.thesis,
+    verdict: anchored.verification.finalVerdict,
+    route: anchored.verification.route,
     outcome: record.outcome,
-    attestation: record.verification.sentinel?.attestation ?? null,
+    replanResolution: record.replan?.resolution ?? null,
+    attestation: anchored.verification.sentinel?.attestation ?? null,
     timestamp: record.timestamp,
   };
   return `data:application/json;base64,${Buffer.from(JSON.stringify(summary)).toString("base64")}`;
@@ -114,16 +122,23 @@ function buildFeedbackURI(record: DecisionRecord): string {
  * Do NOT add enrichments (Polymarket data changes with cache TTL),
  * market snapshots (price drift), or any post-hoc computed field.
  * The hash must be reproducible from the JSONL record alone.
+ * Re-planned records hash the ANCHORED (original) decision + the resolution.
  */
 function computeFeedbackHash(record: DecisionRecord): string {
+  const anchored = record.replan
+    ? record.replan.original
+    : { decision: record.decision, verification: record.verification };
   const canonical = JSON.stringify({
     cycle: record.cycle,
     timestamp: record.timestamp,
-    action: record.decision.action,
-    reasoning: record.decision.reasoning,
-    verdict: record.verification.finalVerdict,
-    route: record.verification.route,
-    sentinelAttestation: record.verification.sentinel?.attestation ?? null,
+    action: anchored.decision.action,
+    reasoning: anchored.decision.reasoning,
+    verdict: anchored.verification.finalVerdict,
+    route: anchored.verification.route,
+    // Included ONLY for re-planned records — keeps hashes of all pre-replan
+    // records (already anchored on-chain) byte-identical to the old scheme.
+    ...(record.replan ? { replanResolution: record.replan.resolution } : {}),
+    sentinelAttestation: anchored.verification.sentinel?.attestation ?? null,
   });
   return "0x" + createHash("sha256").update(canonical).digest("hex");
 }
@@ -165,21 +180,29 @@ export class ReputationWriter {
   /**
    * Write a decision's verdict on-chain as ERC-8004 feedback.
    * Returns the transaction hash, or null if writing was skipped (e.g. flat/no-trade).
+   *
+   * Re-plan rule: when the agent's first decision was BLOCKED and it then
+   * re-planned (possibly to flat), the anchored verdict is the ORIGINAL block —
+   * that's the event with evidentiary value. Without this, every
+   * blocked→stood-down cycle (the best showcase outcome) would silently skip
+   * the chain because the final record is noTrade.
    */
   async writeFeedback(record: DecisionRecord): Promise<string | null> {
-    // Skip no-trade cycles — they produce no verdict worth anchoring.
-    if (record.noTrade) {
+    // Skip pure no-trade cycles (agent chose flat, nothing was blocked).
+    if (record.noTrade && !record.replan) {
       return null;
     }
 
-    const { value, decimals } = verdictToScore(
-      record.verification.finalVerdict,
-    );
-    const { tag1, tag2 } = buildTags(record.verification);
+    // Anchor the verdict that carries evidence: the original blocked decision
+    // when a re-plan happened, else the final (only) one.
+    const anchored = record.replan ? record.replan.original : { decision: record.decision, verification: record.verification };
+
+    const { value, decimals } = verdictToScore(anchored.verification.finalVerdict);
+    const { tag1, tag2 } = buildTags(anchored.verification);
     const feedbackURI = buildFeedbackURI(record);
     const feedbackHash = computeFeedbackHash(record);
 
-    const endpoint = `sentinel.thoughtproof.ai${record.verification.route === "pipeline" ? "+api.thoughtproof.ai" : ""}`;
+    const endpoint = `sentinel.thoughtproof.ai${anchored.verification.route === "pipeline" ? "+api.thoughtproof.ai" : ""}`;
 
     const tx = await this.reputationRegistry.giveFeedback(
       this.agentId,

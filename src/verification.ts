@@ -74,6 +74,10 @@ async function callRV(
       claim: `${decision.action}. Thesis: ${decision.thesis}`,
       context: `Autonomous crypto trading agent, $50k perpetual account. Full reasoning chain: ${decision.reasoning}`,
       speed: "standard",
+      // Request the ECDSA-signed onchain proof (free — signing only, no extra
+      // model cost). Without this the RV verdict carries NO signature and the
+      // block-log's "signed verdict" claim rests on Sentinel hashes alone.
+      onchain: true,
     }),
   });
   if (!res.ok) {
@@ -100,6 +104,10 @@ async function callRV(
         })
         .filter((o: { explanation: string }) => o.explanation.length > 0)
     : [];
+  // The signed proof comes back as `onchain_proof` (when onchain:true was sent):
+  // { hash, signature, signer, verdict, confidence_bps }. Older deploys exposed
+  // `attestation` — keep that as a fallback shape.
+  const proof = (d.onchain_proof ?? d.attestation) as Record<string, any> | undefined;
   return {
     verdict: normalizeVerdict(d.verdict),
     confidence: Number(d.confidence ?? 0),
@@ -107,12 +115,13 @@ async function callRV(
     objections,
     modelCount: typeof d.modelCount === "number" ? d.modelCount : undefined,
     profile: d.verificationProfile ? String(d.verificationProfile) : undefined,
-    attestation: d.attestation
+    attestation: proof
       ? {
-          type: String(d.attestation.type ?? "tp"),
-          hash: d.attestation.hash,
-          signature: d.attestation.signature,
-          receiptId: d.attestation.receiptId ?? d.id,
+          type: String(proof.type ?? (d.onchain_proof ? "onchain_proof" : "tp")),
+          hash: proof.hash,
+          signature: proof.signature,
+          signer: proof.signer,
+          receiptId: proof.receiptId ?? d.id,
         }
       : undefined,
   };
