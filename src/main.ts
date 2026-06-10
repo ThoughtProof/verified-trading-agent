@@ -9,7 +9,8 @@
 // reasoning, not market direction.
 
 import "dotenv/config";
-import { fetchMarketSnapshot, describeMarket } from "./signal.js";
+import { fetchMarketSnapshot, describeMarket, scanUniverse } from "./signal.js";
+import type { ScanCandidate } from "./signal.js";
 import { generateTradeDecision, replanAfterBlock } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
@@ -19,11 +20,16 @@ import type { DecisionRecord } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
 const THOUGHTPROOF_API_KEY = process.env.THOUGHTPROOF_API_KEY ?? "";
-// Multi-asset rotation: the agent evaluates one symbol per cycle, rotating
-// through the basket. More assets = more varied setups = the verification
-// pipeline actually gets exercised (a single asset in a downtrend stays flat
-// forever). SYMBOLS (comma-list) wins; falls back to legacy single SYMBOL;
-// defaults to a liquid major-cap basket. All must be Binance USDT perps.
+// Active discovery (default ON): each cycle scans the whole Binance USDT universe
+// for relative strength + breakout structure, then reasons about the strongest
+// candidates — what a real desk does. Set SCAN_ENABLED=false to fall back to the
+// static SYMBOLS basket below.
+const SCAN_ENABLED = (process.env.SCAN_ENABLED ?? "true").toLowerCase() !== "false";
+const SCAN_MIN_VOLUME_USD = Number(process.env.SCAN_MIN_VOLUME_USD ?? 10_000_000);
+const SCAN_TOP_N = Number(process.env.SCAN_TOP_N ?? 8);
+// Fallback basket (used when SCAN_ENABLED=false, or if a scan returns nothing).
+// The agent evaluates one symbol per cycle, rotating through the list. SYMBOLS
+// (comma-list) wins; falls back to legacy single SYMBOL; defaults to major-caps.
 const SYMBOLS: string[] = (process.env.SYMBOLS ?? process.env.SYMBOL ?? "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT")
   .split(",")
   .map((s) => s.trim().toUpperCase())
@@ -56,6 +62,36 @@ function initReputation(): ReputationWriter | null {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Pick the symbol to evaluate this cycle.
+ *
+ * Active discovery (default): scan the universe, log the leaderboard, and rotate
+ * through the top-N strongest candidates (one per cycle) so the agent surveys
+ * the real movers instead of fixating on a single hot coin. Falls back to the
+ * static SYMBOLS basket if scanning is disabled or the scan returns nothing
+ * (e.g. transient API failure) — the loop must never starve.
+ */
+async function selectSymbol(cycle: number): Promise<string> {
+  if (SCAN_ENABLED) {
+    try {
+      const candidates: ScanCandidate[] = await scanUniverse(SCAN_MIN_VOLUME_USD, SCAN_TOP_N);
+      if (candidates.length > 0) {
+        console.log(`🔭 Universe scan — top movers (≥$${(SCAN_MIN_VOLUME_USD / 1e6).toFixed(0)}M vol):`);
+        candidates.forEach((c, i) =>
+          console.log(
+            `   ${i === (cycle - 1) % candidates.length ? "→" : " "} ${c.symbol.padEnd(13)} ${c.changePct24h >= 0 ? "+" : ""}${c.changePct24h.toFixed(2)}%  vol $${(c.quoteVolumeUsd / 1e6).toFixed(0)}M  rangePos ${(c.rangePosition * 100).toFixed(0)}%`,
+          ),
+        );
+        return candidates[(cycle - 1) % candidates.length].symbol;
+      }
+      console.warn("⚠️  Scan returned no liquid candidates — falling back to basket.");
+    } catch (err) {
+      console.error(`⚠️  Universe scan failed (${err instanceof Error ? err.message : err}) — falling back to basket.`);
+    }
+  }
+  return SYMBOLS[(cycle - 1) % SYMBOLS.length];
+}
 
 async function runCycle(cycle: number, symbol: string, reputation: ReputationWriter | null): Promise<void> {
   const ts = new Date().toISOString();
@@ -190,7 +226,11 @@ async function main(): Promise<void> {
   const reputation = initReputation();
 
   console.log("Verified Trading Agent — Kimi K2.6 reasons, ThoughtProof verifies.");
-  console.log(`Symbols: ${SYMBOLS.join(", ")} (rotating, 1/cycle) · Mode: ${once ? "single cycle" : "loop"} · Log: ${LOG_PATH}`);
+  console.log(
+    SCAN_ENABLED
+      ? `Mode: ${once ? "single cycle" : "loop"} · Discovery: universe scan (top ${SCAN_TOP_N}, ≥$${(SCAN_MIN_VOLUME_USD / 1e6).toFixed(0)}M vol) · Fallback: ${SYMBOLS.join(",")} · Log: ${LOG_PATH}`
+      : `Mode: ${once ? "single cycle" : "loop"} · Symbols: ${SYMBOLS.join(", ")} (rotating, scan OFF) · Log: ${LOG_PATH}`,
+  );
   if (reputation) {
     const check = await reputation.verifyAgent();
     if (check.exists) {
@@ -206,12 +246,13 @@ async function main(): Promise<void> {
   cycle = startCount + 1;
 
   if (once) {
-    // Single-cycle mode: evaluate the first symbol in the basket.
-    await runCycle(cycle, SYMBOLS[0], reputation);
+    // Single-cycle mode: discover (or fall back to) one symbol and evaluate it.
+    const symbol = await selectSymbol(cycle);
+    await runCycle(cycle, symbol, reputation);
   } else {
     while (true) {
-      // Rotate through the basket: one symbol per cycle, round-robin.
-      const symbol = SYMBOLS[(cycle - 1) % SYMBOLS.length];
+      // Each cycle: discover the symbol (scan → top-N rotation), then evaluate.
+      const symbol = await selectSymbol(cycle);
       try {
         await runCycle(cycle, symbol, reputation);
       } catch (err) {

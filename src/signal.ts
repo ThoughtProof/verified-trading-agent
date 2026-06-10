@@ -12,6 +12,90 @@ import type { MarketSnapshot, Technicals } from "./types.js";
 const BINANCE_24HR = "https://api.binance.com/api/v3/ticker/24hr";
 const BINANCE_KLINES = "https://api.binance.com/api/v3/klines";
 
+// ─── Universe scan (active discovery) ─────────────────────────────────────────
+// A real trading desk doesn't stare at one chart — it scans the whole market for
+// relative strength and breakout structure, THEN reasons about the best
+// candidates. This is the difference between "evaluate BTC" and "find what's
+// actually moving". The scan is one cheap call (all 24h tickers) + local ranking.
+
+/** A ranked candidate from the universe scan, before deep technical analysis. */
+export interface ScanCandidate {
+  symbol: string;
+  /** 24h price change %. */
+  changePct24h: number;
+  /** 24h quote (USD) volume — liquidity proxy. */
+  quoteVolumeUsd: number;
+  /** Position within the 24h range: 0 = at the low, 1 = at the high. */
+  rangePosition: number;
+  /** Composite rank score (relative strength + breakout proximity). */
+  score: number;
+}
+
+// Stablecoins and pegged assets — never trade these (no directional edge).
+const STABLE_BASES = new Set([
+  "USDC", "FDUSD", "TUSD", "DAI", "USDP", "EUR", "BUSD", "AEUR",
+  "XUSD", "USD1", "USDE", "GUSD", "PYUSD", "EURI", "USTC",
+]);
+
+// Binance leveraged tokens (UP/DOWN/BULL/BEAR) — decaying derivatives, not spot.
+function isLeveragedToken(base: string): boolean {
+  return base.endsWith("UP") || base.endsWith("DOWN") || base.includes("BULL") || base.includes("BEAR");
+}
+
+/**
+ * Scan the full Binance USDT spot universe for tradeable candidates.
+ *
+ * Filters out illiquid pumps (a $0-volume coin up 65% is untradeable, not an
+ * opportunity), stablecoins, and leveraged tokens, then ranks survivors by a
+ * composite of relative strength (24h change) and breakout proximity (position
+ * in the 24h range). Returns the top N for deeper analysis.
+ *
+ * @param minQuoteVolumeUsd Minimum 24h USD volume to be considered liquid.
+ * @param topN How many ranked candidates to return.
+ */
+export async function scanUniverse(
+  minQuoteVolumeUsd = 10_000_000,
+  topN = 8,
+): Promise<ScanCandidate[]> {
+  const res = await fetch(BINANCE_24HR, {
+    headers: { "User-Agent": "verified-trading-agent/0.1" },
+  });
+  if (!res.ok) {
+    throw new Error(`Binance universe scan failed (${res.status}): ${await res.text()}`);
+  }
+  const all = (await res.json()) as Array<Record<string, string>>;
+
+  const candidates: ScanCandidate[] = [];
+  for (const t of all) {
+    const symbol = t.symbol;
+    if (!symbol.endsWith("USDT")) continue;
+    const base = symbol.slice(0, -4);
+    if (STABLE_BASES.has(base) || isLeveragedToken(base)) continue;
+
+    const quoteVolumeUsd = parseFloat(t.quoteVolume);
+    if (!Number.isFinite(quoteVolumeUsd) || quoteVolumeUsd < minQuoteVolumeUsd) continue;
+
+    const last = parseFloat(t.lastPrice);
+    const hi = parseFloat(t.highPrice);
+    const lo = parseFloat(t.lowPrice);
+    const changePct24h = parseFloat(t.priceChangePercent);
+    if (!Number.isFinite(last) || !Number.isFinite(changePct24h)) continue;
+
+    // Position in the 24h range: 1 = printing new highs (breakout), 0 = at lows.
+    const rangePosition = hi > lo ? (last - lo) / (hi - lo) : 0.5;
+
+    // Composite: relative strength + a breakout-proximity bonus (being near the
+    // high matters; +/-5 points at the extremes). Keeps strong-and-breaking-out
+    // names above strong-but-mid-range ones.
+    const score = changePct24h + (rangePosition - 0.5) * 10;
+
+    candidates.push({ symbol, changePct24h, quoteVolumeUsd, rangePosition, score });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.slice(0, topN);
+}
+
 /**
  * Fetch a 24h ticker snapshot for a symbol (default BTCUSDT), enriched with
  * multi-day technical context (trend, SMA, RSI, recent candles).
