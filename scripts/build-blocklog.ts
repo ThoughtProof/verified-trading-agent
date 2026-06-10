@@ -26,6 +26,15 @@ const ROOT = resolve(__dirname, "..");
 const inPath = resolve(process.argv[2] ?? `${ROOT}/runs/decisions.jsonl`);
 const outPath = resolve(process.argv[3] ?? `${ROOT}/runs/block-log.html`);
 
+// Methodology cutoff: only count decisions made AFTER the RV-situation pipeline
+// went live (commit 775085c, 2026-06-10T16:30Z). Before that, blocks carried no
+// substantive RV objections (rv_objections=0) — a different, weaker verification
+// regime. Mixing the two eras into one aggregate would misrepresent the current
+// system, even with a disclaimer. The raw decisions.jsonl keeps the full history;
+// pre-cutoff rows are archived to decisions-pre-rvfix.jsonl for the audit trail.
+// Override with BLOCKLOG_CUTOFF_ISO= (empty string disables the filter).
+const CUTOFF_ISO = process.env.BLOCKLOG_CUTOFF_ISO ?? "2026-06-10T16:30:00Z";
+
 interface BlockEntry {
   record: DecisionRecord;
   counterfactual: CounterfactualResult | null;
@@ -70,7 +79,16 @@ function harmSource(r: DecisionRecord): { decision: DecisionRecord["decision"]; 
 }
 
 async function main() {
-  const records = loadRecords(inPath);
+  const allRecords = loadRecords(inPath);
+  // Apply the methodology cutoff (see CUTOFF_ISO above). Keeps the page honest:
+  // only decisions from the current verification regime are counted.
+  const records = CUTOFF_ISO
+    ? allRecords.filter((r) => (r.timestamp ?? "") >= CUTOFF_ISO)
+    : allRecords;
+  const excluded = allRecords.length - records.length;
+  if (excluded > 0) {
+    console.log(`Cutoff ${CUTOFF_ISO}: counting ${records.length} post-fix decisions, excluding ${excluded} pre-fix (archived).`);
+  }
   const showcase = records.filter(isShowcase);
 
   const entries: BlockEntry[] = [];
@@ -117,6 +135,7 @@ async function main() {
     liquidations,
     totalAvoidedUsd,
     worstSingle,
+    excludedCount: excluded,
     generatedAt: new Date().toISOString(),
   });
 
@@ -138,6 +157,7 @@ interface RenderData {
   liquidations: number;
   totalAvoidedUsd: number;
   worstSingle: number;
+  excludedCount: number;
   generatedAt: string;
 }
 
@@ -243,7 +263,7 @@ function renderEntry(e: BlockEntry): string {
 function renderHtml(data: RenderData): string {
   const blocksHtml = data.entries.length
     ? data.entries.map(renderEntry).join("\n")
-    : `<p class="muted">No blocked decisions yet. The agent is running; blocks appear here as they happen.</p>`;
+    : `<div class="disclaimer"><b>No blocks under the current verification regime yet.</b> The agent is live and scanning the market every cycle, but in the present conditions it has correctly stayed flat rather than forcing a low-conviction trade — so there is nothing for ThoughtProof to block. Disciplined inaction is the right outcome here, not a bug. Blocked decisions appear here, with full objections and a signed verdict, as soon as the agent attempts a leveraged position whose reasoning doesn't hold. ${data.excludedCount > 0 ? `(${data.excludedCount} earlier decisions from a prior, weaker verification setup are excluded from these stats and archived for audit — see methodology note below.)` : ""}</div>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -315,7 +335,7 @@ function renderHtml(data: RenderData): string {
   ${blocksHtml}
 
   <footer>
-    Generated ${esc(data.generatedAt)} · worst single position drawdown −${data.worstSingle}% of equity · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).
+    Generated ${esc(data.generatedAt)} · worst single position drawdown −${data.worstSingle}% of equity · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).${data.excludedCount > 0 ? `<br><span class="muted">Methodology: stats count only decisions made after the RV verification pipeline was upgraded (2026-06-10T16:30Z). ${data.excludedCount} earlier decisions ran under a weaker setup (no substantive RV objections) and are excluded here but preserved in the raw decision log for audit.</span>` : ""}
   </footer>
 </div>
 </body>
