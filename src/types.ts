@@ -133,6 +133,17 @@ export interface DecisionRecord {
   outcome: "EXECUTED" | "BLOCKED" | "SKIPPED";
   /** Whether the decision was a flat/no-op (agent chose not to trade). */
   noTrade: boolean;
+  /**
+   * Re-plan trail. Present when the first decision was BLOCK/UNCERTAIN and the
+   * agent was given one chance to revise using the verifier's objections.
+   * `decision` and `verification` above always reflect the FINAL attempt.
+   */
+  replan?: {
+    /** The original blocked decision + its verdict (what triggered the re-plan). */
+    original: { decision: TradeDecision; verification: VerificationResult };
+    /** How the revision resolved: did the agent stand down, size down, or still get blocked? */
+    resolution: "flat" | "revised-allowed" | "revised-blocked";
+  };
   /** pot-sdk enrichments (polymarket, friend, graph, pay). */
   enrichments?: EnrichmentResults;
 }

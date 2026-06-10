@@ -50,14 +50,34 @@ function isBlocked(r: DecisionRecord): boolean {
   return r.verification?.finalVerdict === "BLOCK";
 }
 
+// A record is showcase-worthy if its FINAL verdict was BLOCK, OR a re-plan
+// happened (the agent's first directional decision was blocked, then revised).
+// The latter is the strongest story — "wanted a risky trade, got blocked with
+// reasons, stood down" — and must not disappear just because the final verdict
+// is no longer BLOCK.
+function isShowcase(r: DecisionRecord): boolean {
+  return isBlocked(r) || r.replan != null;
+}
+
+// The decision whose HARM we counterfactual is always the original risky one:
+// if the agent re-planned, the danger lived in replan.original.decision; else
+// the (final == only) decision.
+function harmSource(r: DecisionRecord): { decision: DecisionRecord["decision"]; verification: DecisionRecord["verification"] } {
+  if (r.replan) {
+    return { decision: r.replan.original.decision, verification: r.replan.original.verification };
+  }
+  return { decision: r.decision, verification: r.verification };
+}
+
 async function main() {
   const records = loadRecords(inPath);
-  const blocked = records.filter(isBlocked);
+  const showcase = records.filter(isShowcase);
 
   const entries: BlockEntry[] = [];
-  for (const record of blocked) {
-    const side = record.decision.side;
-    const lev = record.decision.leverage;
+  for (const record of showcase) {
+    const src = harmSource(record);
+    const side = src.decision.side;
+    const lev = src.decision.leverage;
     let counterfactual: CounterfactualResult | null = null;
     if ((side === "long" || side === "short") && lev > 0) {
       try {
@@ -77,7 +97,8 @@ async function main() {
 
   // Aggregate avoided-harm stats (headline numbers, harm-framed).
   const totalDecisions = records.length;
-  const totalBlocks = blocked.length;
+  const totalBlocks = entries.length;
+  const standDowns = entries.filter((e) => e.record.replan).length;
   const liquidations = entries.filter((e) => e.counterfactual?.liquidated).length;
   const totalAvoidedUsd = entries.reduce(
     (sum, e) => sum + (e.counterfactual?.avoidedLossUsd ?? 0),
@@ -92,6 +113,7 @@ async function main() {
     entries,
     totalDecisions,
     totalBlocks,
+    standDowns,
     liquidations,
     totalAvoidedUsd,
     worstSingle,
@@ -101,7 +123,7 @@ async function main() {
   writeFileSync(outPath, html, "utf8");
   console.log(
     `Block-log written: ${outPath}\n` +
-      `  decisions: ${totalDecisions} | blocks: ${totalBlocks} | ` +
+      `  decisions: ${totalDecisions} | blocked/re-planned: ${totalBlocks} | re-plans: ${standDowns} | ` +
       `liquidations avoided: ${liquidations} | avoided harm: $${totalAvoidedUsd.toLocaleString()}`,
   );
 }
@@ -112,6 +134,7 @@ interface RenderData {
   entries: BlockEntry[];
   totalDecisions: number;
   totalBlocks: number;
+  standDowns: number;
   liquidations: number;
   totalAvoidedUsd: number;
   worstSingle: number;
@@ -156,11 +179,32 @@ function renderCounterfactual(c: CounterfactualResult | null): string {
     </div>`;
 }
 
+function renderReplan(r: BlockEntry["record"]): string {
+  if (!r.replan) return "";
+  const rev = r.decision; // final decision IS the revised one when replan exists
+  const label =
+    r.replan.resolution === "flat"
+      ? `<span class="rp-good">Agent stood down → stayed flat</span>`
+      : r.replan.resolution === "revised-allowed"
+        ? `<span class="rp-good">Agent revised → ${esc(rev.side)} ${rev.leverage}× (passed verification)</span>`
+        : `<span class="rp-bad">Agent revised → still blocked</span>`;
+  return `
+    <div class="replan">
+      <div class="rp-head">↻ Re-plan — the agent was shown the objections and decided again</div>
+      <div class="rp-body">
+        ${label}
+        ${rev.thesis ? `<div class="rp-thesis">“${esc(rev.thesis)}”</div>` : ""}
+      </div>
+    </div>`;
+}
+
 function renderEntry(e: BlockEntry): string {
   const r = e.record;
-  const d = r.decision;
-  const rv = r.verification.rv;
-  const sent = r.verification.sentinel;
+  // Show the ORIGINAL risky decision + the objections that blocked it.
+  const src = harmSource(r);
+  const d = src.decision;
+  const rv = src.verification.rv;
+  const sent = src.verification.sentinel;
   const objections =
     rv?.objections && rv.objections.length
       ? `<ol class="obj">${rv.objections
@@ -174,16 +218,18 @@ function renderEntry(e: BlockEntry): string {
     : "";
 
   const conf = rv?.confidence != null ? `${Math.round(rv.confidence * 100)}%` : "—";
+  const verdict = src.verification.finalVerdict;
 
   return `
   <article class="block">
     <header>
-      <span class="badge badge-block">BLOCK</span>
+      <span class="badge badge-block">${esc(verdict)}</span>
       <span class="intent">${esc(d.side.toUpperCase())} ${d.leverage}× ${esc(r.market.symbol)} @ $${r.market.price.toLocaleString()}</span>
       <span class="meta">cycle ${r.cycle} · ${esc(r.timestamp.slice(0, 16).replace("T", " "))} · verdict confidence ${conf} · ${rv?.modelCount ?? "?"} models</span>
     </header>
     <div class="thesis"><b>Agent's thesis:</b> ${esc(d.thesis)}</div>
     <div class="why"><b>Why ThoughtProof blocked it:</b>${objections}</div>
+    ${renderReplan(r)}
     ${renderCounterfactual(e.counterfactual)}
     ${attRow}
   </article>`;
@@ -233,6 +279,11 @@ function renderHtml(data: RenderData): string {
   .liq { color:var(--block); font-weight:700; font-size:12px; border:1px solid rgba(255,91,110,.4); padding:1px 6px; border-radius:4px; }
   .cf-honest { margin-top:8px; color:var(--muted); font-size:13px; border-top:1px dashed var(--line); padding-top:8px; }
   .cf-na,.cf-pending { color:var(--muted); }
+  .replan { background:#101a15; border:1px solid #1d3a2b; border-left:3px solid var(--ok); border-radius:10px; padding:12px 14px; margin:12px 0 0; font-size:14px; }
+  .rp-head { font-weight:600; margin-bottom:6px; color:var(--ok); }
+  .rp-good { color:var(--ok); font-weight:600; }
+  .rp-bad { color:var(--block); font-weight:600; }
+  .rp-thesis { margin-top:8px; color:var(--muted); font-size:13px; font-style:italic; border-top:1px dashed var(--line); padding-top:8px; }
   .att { margin-top:10px; font-size:12px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   .muted { color:var(--muted); }
   footer { margin-top:40px; color:var(--muted); font-size:12px; text-align:center; }
@@ -242,11 +293,12 @@ function renderHtml(data: RenderData): string {
 <body>
 <div class="wrap">
   <h1>Verified Trading Agent — Block Log</h1>
-  <p class="sub">An autonomous agent (Kimi K2.6) reasons about BTC trades. Before any leveraged position, <b>ThoughtProof verifies the reasoning</b>. These are the decisions it <b>blocked</b> — each with the objections that sank it and a signed verdict.</p>
+  <p class="sub">An autonomous agent (Kimi K2.6) reasons about BTC trades. Before any leveraged position, <b>ThoughtProof verifies the reasoning</b>. These are the decisions it <b>blocked</b> — each with the objections that sank it, what the agent did next, and a signed verdict.</p>
 
   <div class="stats">
     <div class="stat"><div class="n">${data.totalDecisions}</div><div class="l">Decisions verified</div></div>
-    <div class="stat"><div class="n">${data.totalBlocks}</div><div class="l">Blocked</div></div>
+    <div class="stat"><div class="n">${data.totalBlocks}</div><div class="l">Blocked / re-planned</div></div>
+    <div class="stat"><div class="n">${data.standDowns}</div><div class="l">Re-plans triggered</div></div>
     <div class="stat harm"><div class="n">${data.liquidations}</div><div class="l">Liquidations avoided</div></div>
     <div class="stat harm"><div class="n">$${data.totalAvoidedUsd.toLocaleString()}</div><div class="l">Worst-case harm avoided</div></div>
   </div>

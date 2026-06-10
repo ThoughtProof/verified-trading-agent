@@ -75,7 +75,7 @@ export async function generateTradeDecision(
         { role: "user", content: userMsg },
       ],
       temperature: 1, // MUST be 1 for kimi-k2.6
-      max_tokens: 2000, // generous: reasoning_content eats budget first
+      max_tokens: 4000, // reasoning_content eats budget first; 2000 truncated the JSON
     }),
   });
 
@@ -107,32 +107,118 @@ export async function generateTradeDecision(
   return { decision, raw: content };
 }
 
+/**
+ * Re-plan after a verification BLOCK/UNCERTAIN. Feeds the agent its own blocked
+ * decision plus the verifier's objections, and asks for ONE revised decision.
+ *
+ * HONESTY LINE: the goal is a genuinely safer/better-reasoned decision (often
+ * "stay flat" or "size down with a stop"), NOT to talk the verifier into an
+ * ALLOW. We tell the model exactly that. The revised decision is verified again
+ * by the same independent pipeline — there is no way to "argue past" it.
+ *
+ * Anti-loop: this runs at most once per cycle (enforced by the caller). The
+ * revised decision is final for the cycle whatever its verdict.
+ */
+export async function replanAfterBlock(
+  market: MarketSnapshot,
+  blocked: TradeDecision,
+  verdict: "BLOCK" | "UNCERTAIN",
+  objections: string[],
+  apiKey: string,
+): Promise<KimiResult> {
+  const objectionList = objections.length
+    ? objections.map((o, i) => `${i + 1}. ${o}`).join("\n")
+    : "(no specific objections returned; the verifier could not confirm the reasoning was sound)";
+
+  const userMsg = `Live market snapshot:\n${describeMarket(market)}\n\nYour previous decision this cycle was ${verdict} by the independent verification layer.\n\nYour blocked decision:\n  action: ${blocked.action}\n  side: ${blocked.side}, leverage: ${blocked.leverage}\n  thesis: ${blocked.thesis}\n\nThe verifier's objections:\n${objectionList}\n\nRe-decide ONCE, now. Treat the objections as a skeptical risk committee's findings: either FIX the reasoning (e.g. size down, add an explicit invalidation/stop, wait for confluence) or — if the objections show there is no defensible edge — STAY FLAT. Staying flat is a perfectly good answer; do not force a trade to "win" the re-decision. You are NOT trying to convince the verifier; you are trying to make the decision a professional could defend. Your revised decision will be independently verified again.\n\nRespond ONLY with the same JSON object shape.`;
+
+  const res = await fetch(MOONSHOT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMsg },
+      ],
+      temperature: 1, // MUST be 1 for kimi-k2.6
+      max_tokens: 4000, // replan reasons more; needs headroom so the JSON isn't cut off
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Kimi K2.6 replan failed (${res.status}): ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as {
+    choices: Array<{ message: { content?: string; reasoning_content?: string } }>;
+  };
+  const msg = data.choices?.[0]?.message;
+  const content = (msg?.content ?? "").trim();
+  const reasoning = (msg?.reasoning_content ?? "").trim();
+  const parsed = parseDecision(content);
+
+  const decision: TradeDecision = {
+    symbol: market.symbol,
+    side: parsed.side,
+    leverage: parsed.leverage,
+    action: parsed.action,
+    thesis: parsed.thesis,
+    reasoning: reasoning || content,
+    highStakes: classifyStakes(parsed.side, parsed.leverage),
+  };
+
+  return { decision, raw: content };
+}
+
 function parseDecision(content: string): {
   side: "long" | "short" | "flat";
   leverage: number;
   action: string;
   thesis: string;
 } {
+  const normSide = (v: unknown): "long" | "short" | "flat" =>
+    (["long", "short", "flat"].includes(String(v)) ? v : "flat") as "long" | "short" | "flat";
+
+  // First try strict JSON (the happy path).
   const match = content.match(/\{[\s\S]*\}/);
-  if (!match) {
-    // Could not parse — treat as flat/no-op rather than fabricate a trade.
-    return { side: "flat", leverage: 0, action: "no action (unparseable)", thesis: content.slice(0, 200) };
+  if (match) {
+    try {
+      const o = JSON.parse(match[0]) as Record<string, unknown>;
+      const side = normSide(o.side);
+      return {
+        side,
+        leverage: Number(o.leverage) || 0,
+        action: String(o.action ?? (side === "flat" ? "stay flat" : "trade")),
+        thesis: String(o.thesis ?? ""),
+      };
+    } catch {
+      // fall through to field-level recovery
+    }
   }
-  try {
-    const o = JSON.parse(match[0]) as Record<string, unknown>;
-    const side = (["long", "short", "flat"].includes(String(o.side)) ? o.side : "flat") as
-      | "long"
-      | "short"
-      | "flat";
+
+  // Recovery: a reasoning model can hit the token cap mid-JSON (valid JSON, no
+  // closing brace). Pull the fields we need with targeted regexes so a truncated
+  // but clearly-formed decision isn't discarded as "flat/unparseable".
+  const sideMatch = content.match(/"side"\s*:\s*"(long|short|flat)"/);
+  const levMatch = content.match(/"leverage"\s*:\s*(-?\d+(?:\.\d+)?)/);
+  const actionMatch = content.match(/"action"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const thesisMatch = content.match(/"thesis"\s*:\s*"((?:[^"\\]|\\.)*)"?/);
+  if (sideMatch) {
+    const side = normSide(sideMatch[1]);
     return {
       side,
-      leverage: Number(o.leverage) || 0,
-      action: String(o.action ?? (side === "flat" ? "stay flat" : "trade")),
-      thesis: String(o.thesis ?? ""),
+      leverage: levMatch ? Number(levMatch[1]) || 0 : 0,
+      action: actionMatch ? actionMatch[1] : side === "flat" ? "stay flat" : "trade",
+      thesis: thesisMatch ? thesisMatch[1].replace(/\\"/g, '"') : "",
     };
-  } catch {
-    return { side: "flat", leverage: 0, action: "no action (bad json)", thesis: content.slice(0, 200) };
   }
+
+  // Truly unparseable — stay flat rather than fabricate a trade.
+  return { side: "flat", leverage: 0, action: "no action (unparseable)", thesis: content.slice(0, 200) };
 }
 
 /**

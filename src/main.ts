@@ -10,7 +10,7 @@
 
 import "dotenv/config";
 import { fetchMarketSnapshot, describeMarket } from "./signal.js";
-import { generateTradeDecision } from "./reasoning.js";
+import { generateTradeDecision, replanAfterBlock } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
 import { ReputationWriter } from "./reputation.js";
@@ -58,18 +58,67 @@ async function runCycle(cycle: number, reputation: ReputationWriter | null): Pro
   console.log(`📊 ${describeMarket(market)}`);
 
   // 2. Reasoning (Kimi K2.6)
-  const { decision } = await generateTradeDecision(market, MOONSHOT_API_KEY);
-  if (decision.side === "flat") {
-    console.log(`🤖 Agent: stays FLAT — ${decision.thesis}`);
+  const { decision: decision0 } = await generateTradeDecision(market, MOONSHOT_API_KEY);
+  if (decision0.side === "flat") {
+    console.log(`🤖 Agent: stays FLAT — ${decision0.thesis}`);
   } else {
     console.log(
-      `🤖 Agent wants: ${decision.action} [${decision.side} ${decision.leverage}x, ${decision.highStakes ? "HIGH-STAKES→RV" : "routine→Sentinel"}]`,
+      `🤖 Agent wants: ${decision0.action} [${decision0.side} ${decision0.leverage}x, ${decision0.highStakes ? "HIGH-STAKES→RV" : "routine→Sentinel"}]`,
     );
-    console.log(`   Thesis: ${decision.thesis}`);
+    console.log(`   Thesis: ${decision0.thesis}`);
   }
 
   // 3. Verification (ThoughtProof)
-  const verification = await verifyDecision(decision, THOUGHTPROOF_API_KEY);
+  let decision = decision0;
+  let verification = await verifyDecision(decision, THOUGHTPROOF_API_KEY);
+
+  // 3b. Re-plan on a blocked directional decision (at most once).
+  // Bens GOAT point: on UNCERTAIN/BLOCK the agent should do something useful —
+  // revise using the objections — instead of just halting. The revised decision
+  // is verified again by the same independent pipeline (no arguing past it).
+  let replan: DecisionRecord["replan"];
+  const firstBlocked =
+    decision.side !== "flat" &&
+    (verification.finalVerdict === "BLOCK" || verification.finalVerdict === "UNCERTAIN");
+  if (firstBlocked) {
+    const objections = (verification.rv?.objections ?? []).map((o) => o.explanation);
+    if (verification.sentinel?.reason && objections.length === 0) {
+      objections.push(verification.sentinel.reason);
+    }
+    console.log(`↻ Re-planning after ${verification.finalVerdict} — feeding objections back to the agent...`);
+    try {
+      const original = { decision, verification };
+      const revised = await replanAfterBlock(
+        market,
+        decision,
+        verification.finalVerdict as "BLOCK" | "UNCERTAIN",
+        objections,
+        MOONSHOT_API_KEY,
+      );
+      // Verify the revised decision (flat is a no-op trade but still recorded
+      // as ALLOW by verifyDecision, so the resolution reads correctly).
+      const revisedVerification = await verifyDecision(revised.decision, THOUGHTPROOF_API_KEY);
+
+      const resolution: NonNullable<DecisionRecord["replan"]>["resolution"] =
+        revised.decision.side === "flat"
+          ? "flat"
+          : revisedVerification.finalVerdict === "ALLOW"
+            ? "revised-allowed"
+            : "revised-blocked";
+
+      console.log(
+        `   → revised: ${revised.decision.side === "flat" ? "STOOD DOWN (flat)" : `${revised.decision.side} ${revised.decision.leverage}x`} ` +
+          `→ ${revisedVerification.finalVerdict} [${resolution}]`,
+      );
+
+      // The FINAL attempt becomes the record's decision/verification.
+      decision = revised.decision;
+      verification = revisedVerification;
+      replan = { original, resolution };
+    } catch (err) {
+      console.error(`   ⚠️  Re-plan failed (keeping original block): ${err instanceof Error ? err.message : err}`);
+    }
+  }
 
   // 4. Decide outcome
   let outcome: DecisionRecord["outcome"];
@@ -107,7 +156,7 @@ async function runCycle(cycle: number, reputation: ReputationWriter | null): Pro
   logEnrichments(enrichments);
 
   // 6. Track
-  const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade, enrichments };
+  const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade, replan, enrichments };
   recordDecision(record);
 
   // 7. On-chain reputation (ERC-8004 giveFeedback, SKALE testnet — zero gas)
