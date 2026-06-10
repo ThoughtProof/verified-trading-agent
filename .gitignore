@@ -4,4 +4,5 @@ dist/
 .env.local
 *.log
 runs/*.jsonl
+runs/*.html
 !runs/.gitkeep

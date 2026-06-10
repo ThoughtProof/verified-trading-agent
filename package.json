@@ -8,6 +8,7 @@
     "build": "tsc",
     "demo": "tsx src/main.ts --once",
     "loop": "tsx src/main.ts",
+    "blocklog": "tsx scripts/build-blocklog.ts",
     "test": "vitest run"
   },
   "keywords": [

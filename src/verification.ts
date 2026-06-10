@@ -73,18 +73,32 @@ async function callRV(
     body: JSON.stringify({
       claim: `${decision.action}. Thesis: ${decision.thesis}`,
       context: `Autonomous crypto trading agent, $50k perpetual account. Full reasoning chain: ${decision.reasoning}`,
-      tier: "standard",
+      speed: "standard",
     }),
   });
   if (!res.ok) {
     throw new Error(`RV failed (${res.status}): ${await res.text()}`);
   }
   const d = (await res.json()) as Record<string, any>;
+  // /v1/check returns objections as an array of plain strings (top material/notable
+  // descriptions). Older code mapped o.explanation/o.text/o.claim assuming objects —
+  // that silently produced empty explanations. Handle both shapes defensively.
   const objections = Array.isArray(d.objections)
-    ? d.objections.map((o: any) => ({
-        severity: (o.severity ?? "medium") as "low" | "medium" | "high" | "critical",
-        explanation: String(o.explanation ?? o.text ?? o.claim ?? ""),
-      }))
+    ? d.objections
+        .map((o: any) => {
+          if (typeof o === "string") {
+            return { severity: "medium" as const, explanation: o };
+          }
+          return {
+            severity: (o.severity ?? o.materiality ?? "medium") as
+              | "low"
+              | "medium"
+              | "high"
+              | "critical",
+            explanation: String(o.explanation ?? o.description ?? o.text ?? o.claim ?? ""),
+          };
+        })
+        .filter((o: { explanation: string }) => o.explanation.length > 0)
     : [];
   return {
     verdict: normalizeVerdict(d.verdict),
