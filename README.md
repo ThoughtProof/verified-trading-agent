@@ -28,7 +28,7 @@ Most agentic-trading demos show you a bot that (claims to) make money. This one 
 ## Why these specific choices
 
 - **Kimi K2.6 as the agent, not the verifier.** ThoughtProof's RV panel uses Grok, DeepSeek, Gemini, Sonnet. Using any of those as the trading agent would let a model judge itself (circularity). Kimi (Moonshot) sits cleanly outside the panel. And it's a strong, widely-used model — so blocks can't be dismissed as "they used a dumb agent" (no strawman).
-- **Live market data, simulated execution.** Theses are grounded in real BTC moves so the blocks are credible; nothing irreversible happens.
+- **Live market data, simulated execution.** Theses are grounded in real market moves (a rotating basket of major-cap crypto perps — BTC, ETH, SOL, BNB, XRP, DOGE — one asset per cycle) so the blocks are credible; nothing irreversible happens.
 
 ## Run it
 

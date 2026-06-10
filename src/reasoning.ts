@@ -34,7 +34,7 @@ Respond ONLY with a JSON object, no prose around it:
 {
   "side": "long" | "short" | "flat",
   "leverage": <number, 0 if flat; size to conviction, not habit>,
-  "action": "<short imperative, e.g. 'open 2x long BTC, 5000 USDC margin' or 'stay flat'>",
+  "action": "<short imperative naming the asset, e.g. 'open 2x long ETH, 5000 USDC margin' or 'stay flat'>",
   "thesis": "<2-3 sentences: the edge, why now, the invalidation level, and the main counter-argument. For flat: why no setup qualifies.>"
 }`;
 

@@ -19,7 +19,15 @@ import type { DecisionRecord } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
 const THOUGHTPROOF_API_KEY = process.env.THOUGHTPROOF_API_KEY ?? "";
-const SYMBOL = process.env.SYMBOL ?? "BTCUSDT";
+// Multi-asset rotation: the agent evaluates one symbol per cycle, rotating
+// through the basket. More assets = more varied setups = the verification
+// pipeline actually gets exercised (a single asset in a downtrend stays flat
+// forever). SYMBOLS (comma-list) wins; falls back to legacy single SYMBOL;
+// defaults to a liquid major-cap basket. All must be Binance USDT perps.
+const SYMBOLS: string[] = (process.env.SYMBOLS ?? process.env.SYMBOL ?? "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT")
+  .split(",")
+  .map((s) => s.trim().toUpperCase())
+  .filter((s) => s.length > 0);
 const MAX_CYCLES = Number(process.env.MAX_CYCLES ?? 0);
 const CYCLE_INTERVAL_SEC = Number(process.env.CYCLE_INTERVAL_SEC ?? 900);
 const PRIVATE_KEY = process.env.REPUTATION_PRIVATE_KEY ?? process.env.PRIVATE_KEY ?? "";
@@ -49,12 +57,12 @@ function initReputation(): ReputationWriter | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runCycle(cycle: number, reputation: ReputationWriter | null): Promise<void> {
+async function runCycle(cycle: number, symbol: string, reputation: ReputationWriter | null): Promise<void> {
   const ts = new Date().toISOString();
-  console.log(`\n──────── Cycle ${cycle} · ${ts} ────────`);
+  console.log(`\n──────── Cycle ${cycle} · ${symbol} · ${ts} ────────`);
 
   // 1. Signal
-  const market = await fetchMarketSnapshot(SYMBOL);
+  const market = await fetchMarketSnapshot(symbol);
   console.log(`📊 ${describeMarket(market)}`);
 
   // 2. Reasoning (Kimi K2.6)
@@ -182,7 +190,7 @@ async function main(): Promise<void> {
   const reputation = initReputation();
 
   console.log("Verified Trading Agent — Kimi K2.6 reasons, ThoughtProof verifies.");
-  console.log(`Symbol: ${SYMBOL} · Mode: ${once ? "single cycle" : "loop"} · Log: ${LOG_PATH}`);
+  console.log(`Symbols: ${SYMBOLS.join(", ")} (rotating, 1/cycle) · Mode: ${once ? "single cycle" : "loop"} · Log: ${LOG_PATH}`);
   if (reputation) {
     const check = await reputation.verifyAgent();
     if (check.exists) {
@@ -198,13 +206,16 @@ async function main(): Promise<void> {
   cycle = startCount + 1;
 
   if (once) {
-    await runCycle(cycle, reputation);
+    // Single-cycle mode: evaluate the first symbol in the basket.
+    await runCycle(cycle, SYMBOLS[0], reputation);
   } else {
     while (true) {
+      // Rotate through the basket: one symbol per cycle, round-robin.
+      const symbol = SYMBOLS[(cycle - 1) % SYMBOLS.length];
       try {
-        await runCycle(cycle, reputation);
+        await runCycle(cycle, symbol, reputation);
       } catch (err) {
-        console.error(`Cycle ${cycle} error:`, err instanceof Error ? err.message : err);
+        console.error(`Cycle ${cycle} (${symbol}) error:`, err instanceof Error ? err.message : err);
       }
       cycle++;
       if (MAX_CYCLES > 0 && cycle - startCount > MAX_CYCLES) break;

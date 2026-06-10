@@ -82,7 +82,7 @@ async function callRV(
       ...(situation
         ? {
             situation:
-              `An autonomous crypto trading agent (simulated $50k perpetual account, BTC) must decide each cycle: ` +
+              `An autonomous crypto trading agent (simulated $50k perpetual account) must decide each cycle: ` +
               `go long, go short, or stay flat — and at what leverage. Current market:\n${situation}`,
           }
         : {}),
