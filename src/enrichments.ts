@@ -118,31 +118,37 @@ export async function runEnrichments(
   const results: EnrichmentResults = {};
 
   // 1. Polymarket — crowd intelligence (no API key needed, public APIs)
-  //    Uses the real verification verdict + confidence from Sentinel/RV.
-  const sentinelConf = verification.sentinel?.confidence ?? 0;
-  const rvConf = verification.rv?.confidence ?? 0;
-  const confidence = rvConf > 0 ? rvConf : sentinelConf > 0 ? sentinelConf : 0.5;
-  const pmResult = await enrichWithPolymarket(decision, verification.finalVerdict, confidence);
-  if (pmResult) {
-    results.polymarket = {
-      available: pmResult.available,
-      modifiesVerdict: pmResult.modifiesVerdict,
-      verdictAdjustment: pmResult.verdictAdjustment,
-      contextForSynthesis: pmResult.contextForSynthesis,
-      result: pmResult.result
-        ? {
-            primarySignal: pmResult.result.primarySignal
-              ? {
-                  probability: pmResult.result.primarySignal.probability,
-                  strength: pmResult.result.primarySignal.strength,
-                  market: { question: pmResult.result.primarySignal.market.question },
-                }
-              : null,
-            alignment: pmResult.result.alignment,
-            collectiveConfidence: pmResult.result.collectiveConfidence,
-          }
-        : null,
-    };
+  //    DEFAULT OFF: Polymarket currently has no substantive BTC price-direction
+  //    markets, so it returns "no data" every cycle — adding latency + log noise
+  //    for zero signal. Enable with POLYMARKET_ENABLED=true once relevant crypto
+  //    markets exist, or when the agent trades on Polymarket markets directly
+  //    (the real use-case of @pot-sdk2/polymarket).
+  if (process.env.POLYMARKET_ENABLED === "true") {
+    const sentinelConf = verification.sentinel?.confidence ?? 0;
+    const rvConf = verification.rv?.confidence ?? 0;
+    const confidence = rvConf > 0 ? rvConf : sentinelConf > 0 ? sentinelConf : 0.5;
+    const pmResult = await enrichWithPolymarket(decision, verification.finalVerdict, confidence);
+    if (pmResult) {
+      results.polymarket = {
+        available: pmResult.available,
+        modifiesVerdict: pmResult.modifiesVerdict,
+        verdictAdjustment: pmResult.verdictAdjustment,
+        contextForSynthesis: pmResult.contextForSynthesis,
+        result: pmResult.result
+          ? {
+              primarySignal: pmResult.result.primarySignal
+                ? {
+                    probability: pmResult.result.primarySignal.probability,
+                    strength: pmResult.result.primarySignal.strength,
+                    market: { question: pmResult.result.primarySignal.market.question },
+                  }
+                : null,
+              alignment: pmResult.result.alignment,
+              collectiveConfidence: pmResult.result.collectiveConfidence,
+            }
+          : null,
+      };
+    }
   }
 
   // 2. Friend — persistent memory critic
