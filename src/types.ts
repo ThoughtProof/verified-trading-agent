@@ -26,7 +26,7 @@ export interface Technicals {
 
 /** A live market snapshot the agent reasons over. */
 export interface MarketSnapshot {
-  symbol: string; // e.g. "BTCUSDT"
+  symbol: string; // e.g. "BTCUSDT" (CEX) or "PEPE/WETH" (DEX pool)
   price: number;
   priceChangePct24h: number;
   high24h: number;
@@ -35,6 +35,20 @@ export interface MarketSnapshot {
   fetchedAt: string; // ISO
   /** Multi-day technical context (trend, SMA, RSI, candle structure). */
   technicals?: Technicals;
+  /** Trading venue. "cex" = Binance spot (full daily history). "dex" = on-chain
+   * pool via GeckoTerminal (hourly OHLCV; thinner history, higher rug/liquidity
+   * risk). DEX context is intentionally flagged so the agent + verifier + the
+   * block-log can treat it with appropriate skepticism. */
+  venue?: "cex" | "dex";
+  /** DEX-only context (present when venue === "dex"): on-chain risk signals. */
+  dex?: {
+    network: string;          // e.g. "solana", "eth", "base"
+    dexId: string;            // e.g. "raydium", "uniswap_v3"
+    poolAddress: string;
+    liquidityUsd: number;     // total pool reserve — thin = untradeable / rug-prone
+    /** Hours of OHLCV history actually available (DEX tokens can be brand new). */
+    historyHours: number;
+  };
 }
 
 /** The agent's trade decision (from Kimi K2.6). */

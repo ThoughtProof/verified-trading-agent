@@ -30,6 +30,7 @@
 // accounting. Switch to 1m klines if precision ever matters.
 
 const BINANCE_KLINES = "https://api.binance.com/api/v3/klines";
+const GECKOTERMINAL = "https://api.geckoterminal.com/api/v2";
 
 export const ACCOUNT_EQUITY = 50_000;
 // Maintenance margin buffer: real exchanges liquidate slightly before the
@@ -97,6 +98,42 @@ async function fetchHourlyKlines(
   }));
 }
 
+/** On-chain pool coordinates for sourcing DEX counterfactual candles. */
+export interface DexSource {
+  network: string;
+  poolAddress: string;
+}
+
+/**
+ * Fetch hourly OHLCV for a DEX pool from GeckoTerminal and shape it like the
+ * Binance candles. Returns candles within [startMs, endMs] (the API returns
+ * newest-first; we reverse to chronological and clip to the block window).
+ */
+async function fetchDexHourlyCandles(
+  src: DexSource,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<Candle[]> {
+  const url = `${GECKOTERMINAL}/networks/${src.network}/pools/${src.poolAddress}/ohlcv/hour?aggregate=1&limit=1000`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "verified-trading-agent/0.1" },
+  });
+  if (!res.ok) {
+    throw new Error(`GeckoTerminal OHLCV failed (${res.status}): ${await res.text()}`);
+  }
+  const body = (await res.json()) as { data?: { attributes?: { ohlcv_list?: number[][] } } };
+  const raw = (body.data?.attributes?.ohlcv_list ?? []).slice().reverse();
+  // ohlcv: [tsSeconds, open, high, low, close, volume]
+  return raw
+    .map((r) => ({
+      openTime: Number(r[0]) * 1000,
+      high: r[2],
+      low: r[3],
+      close: r[4],
+    }))
+    .filter((c) => c.openTime >= startTimeMs && c.openTime <= endTimeMs);
+}
+
 /**
  * Simulate the harm a blocked leveraged position would have caused, using real
  * forward price data. Returns null only for non-directional (flat) decisions.
@@ -108,6 +145,9 @@ export async function estimateCounterfactual(
   entryPrice: number,
   blockedAtIso: string,
   now: Date = new Date(),
+  /** When set, source forward candles from this DEX pool (GeckoTerminal) instead
+   * of Binance — the symbol isn't a CEX ticker for on-chain tokens. */
+  dexSource?: DexSource,
 ): Promise<CounterfactualResult> {
   const sideSign = side === "long" ? 1 : -1;
   const liquidationThresholdPct =
@@ -133,7 +173,9 @@ export async function estimateCounterfactual(
     insufficientData: true,
   };
 
-  const candles = await fetchHourlyKlines(symbol, startMs, endMs);
+  const candles = dexSource
+    ? await fetchDexHourlyCandles(dexSource, startMs, endMs)
+    : await fetchHourlyKlines(symbol, startMs, endMs);
   if (candles.length === 0) {
     return base; // not enough forward data yet (just-blocked decision)
   }

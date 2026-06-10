@@ -28,7 +28,7 @@ Most agentic-trading demos show you a bot that (claims to) make money. This one 
 ## Why these specific choices
 
 - **Kimi K2.6 as the agent, not the verifier.** ThoughtProof's RV panel uses Grok, DeepSeek, Gemini, Sonnet. Using any of those as the trading agent would let a model judge itself (circularity). Kimi (Moonshot) sits cleanly outside the panel. And it's a strong, widely-used model — so blocks can't be dismissed as "they used a dumb agent" (no strawman).
-- **Live market data, simulated execution.** Each cycle the agent scans the full Binance USDT spot universe for relative strength + breakout structure (filtering out illiquid pumps, stablecoins, and leveraged tokens), then reasons about the strongest movers — what a real desk does, not a fixed watchlist. Theses are grounded in real market data so the blocks are credible; nothing irreversible happens. (Set `SCAN_ENABLED=false` to fall back to a static rotating basket.)
+- **Live market data, simulated execution.** Each cycle the agent scans the full Binance USDT spot universe for relative strength + breakout structure (filtering out illiquid pumps, stablecoins, and leveraged tokens), and on a configurable cadence also probes the on-chain DEX tail via GeckoTerminal (trending pools across Solana/ETH/BSC/Base — where outsized gains *and* the real danger live: thin liquidity, fresh pools, rugs). It then reasons about the strongest movers — what a real desk does, not a fixed watchlist. DEX tokens carry explicit on-chain risk context (liquidity, pool age) so the agent and verifier can be appropriately skeptical. Theses are grounded in real market data so the blocks are credible; nothing irreversible happens. (Set `SCAN_ENABLED=false` / `DEX_ENABLED=false` to narrow the field.)
 
 ## Run it
 

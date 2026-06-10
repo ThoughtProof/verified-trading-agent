@@ -99,12 +99,19 @@ async function main() {
     let counterfactual: CounterfactualResult | null = null;
     if ((side === "long" || side === "short") && lev > 0) {
       try {
+        // DEX trades source their forward candles from the on-chain pool, not Binance.
+        const dexSource =
+          record.market.venue === "dex" && record.market.dex
+            ? { network: record.market.dex.network, poolAddress: record.market.dex.poolAddress }
+            : undefined;
         counterfactual = await estimateCounterfactual(
           record.market.symbol,
           side,
           lev,
           record.market.price,
           record.timestamp,
+          new Date(),
+          dexSource,
         );
       } catch (e) {
         console.error(`counterfactual failed for cycle ${record.cycle}:`, e);

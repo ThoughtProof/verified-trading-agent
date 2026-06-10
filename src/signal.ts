@@ -181,6 +181,126 @@ async function fetchDailyKlines(symbol: string, limit: number): Promise<Candle[]
   }));
 }
 
+// ─── DEX (on-chain) via GeckoTerminal ─────────────────────────────────────────
+// Free, no key. This is where the real degen money — and the real danger —
+// lives: brand-new tokens, thin liquidity, honeypots, rugs. Exactly what
+// autonomous agents chase for outsized gains, and exactly the reasoning a
+// verifier must scrutinise. We fetch the same shape of data as Binance (OHLCV
+// candles → identical technicals) plus on-chain risk context (liquidity, age).
+
+const GECKOTERMINAL = "https://api.geckoterminal.com/api/v2";
+
+/** A trending DEX pool surfaced by discovery, before deep analysis. */
+export interface DexPool {
+  network: string;
+  dexId: string;
+  poolAddress: string;
+  name: string;          // e.g. "PEPE / WETH"
+  baseSymbol: string;
+  priceUsd: number;
+  changePct24h: number;
+  volumeUsd24h: number;
+  liquidityUsd: number;
+}
+
+/**
+ * Discover trending DEX pools across networks via GeckoTerminal.
+ * Filters out the untradeable tail: pools below a liquidity floor (rug / exit-
+ * scam risk) and below a volume floor (no real flow). Returns survivors ranked
+ * by 24h change (relative strength), tagged for the unified scan.
+ */
+export async function scanDexUniverse(
+  minLiquidityUsd = 250_000,
+  minVolumeUsd24h = 500_000,
+  topN = 6,
+): Promise<DexPool[]> {
+  const res = await fetch(`${GECKOTERMINAL}/networks/trending_pools?include=base_token`, {
+    headers: { Accept: "application/json", "User-Agent": "verified-trading-agent/0.1" },
+  });
+  if (!res.ok) {
+    throw new Error(`GeckoTerminal trending failed (${res.status}): ${await res.text()}`);
+  }
+  const body = (await res.json()) as { data?: Array<Record<string, any>> };
+  const pools: DexPool[] = [];
+  for (const p of body.data ?? []) {
+    const a = p.attributes ?? {};
+    const liquidityUsd = parseFloat(a.reserve_in_usd ?? "0");
+    const volumeUsd24h = parseFloat(a.volume_usd?.h24 ?? "0");
+    if (!Number.isFinite(liquidityUsd) || liquidityUsd < minLiquidityUsd) continue;
+    if (!Number.isFinite(volumeUsd24h) || volumeUsd24h < minVolumeUsd24h) continue;
+
+    // pool id looks like "solana_<addr>" or "eth_<addr>"; network is on relationships
+    const network = String(p.relationships?.network?.data?.id ?? a.network ?? "").trim();
+    const poolAddress = String(a.address ?? "").trim();
+    if (!network || !poolAddress) continue;
+
+    const name = String(a.name ?? "?");
+    pools.push({
+      network,
+      dexId: String(p.relationships?.dex?.data?.id ?? "dex"),
+      poolAddress,
+      name,
+      baseSymbol: name.split("/")[0].trim(),
+      priceUsd: parseFloat(a.base_token_price_usd ?? "0"),
+      changePct24h: parseFloat(a.price_change_percentage?.h24 ?? "0"),
+      volumeUsd24h,
+      liquidityUsd,
+    });
+  }
+  pools.sort((x, y) => y.changePct24h - x.changePct24h);
+  return pools.slice(0, topN);
+}
+
+/**
+ * Fetch an hourly-OHLCV snapshot for a DEX pool and compute the SAME technicals
+ * as the CEX path (the indicators are timeframe-agnostic; here each "period" is
+ * an hour rather than a day, which we make explicit to the agent). Carries
+ * on-chain risk context (liquidity, available history) so the agent and verifier
+ * can be appropriately skeptical of a thin, freshly-deployed pool.
+ */
+export async function fetchDexSnapshot(pool: DexPool): Promise<MarketSnapshot> {
+  const url = `${GECKOTERMINAL}/networks/${pool.network}/pools/${pool.poolAddress}/ohlcv/hour?aggregate=1&limit=336`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "verified-trading-agent/0.1" },
+  });
+  if (!res.ok) {
+    throw new Error(`GeckoTerminal OHLCV failed (${res.status}): ${await res.text()}`);
+  }
+  const body = (await res.json()) as { data?: { attributes?: { ohlcv_list?: number[][] } } };
+  // ohlcv_list: [[ts, open, high, low, close, volume], ...] newest-first → reverse.
+  const raw = (body.data?.attributes?.ohlcv_list ?? []).slice().reverse();
+  const candles: Candle[] = raw.map((r) => ({
+    open: r[1], high: r[2], low: r[3], close: r[4], volume: r[5],
+  }));
+  const closes = candles.map((c) => c.close);
+  const technicals = closes.length >= 15 ? computeTechnicals(closes, candles) : undefined;
+
+  // 24h window = last 24 hourly candles.
+  const last24 = candles.slice(-24);
+  const high24h = last24.length ? Math.max(...last24.map((c) => c.high)) : pool.priceUsd;
+  const low24h = last24.length ? Math.min(...last24.map((c) => c.low)) : pool.priceUsd;
+  const volume24h = last24.reduce((s, c) => s + c.volume, 0);
+
+  return {
+    symbol: pool.name,
+    price: pool.priceUsd,
+    priceChangePct24h: pool.changePct24h,
+    high24h,
+    low24h,
+    volume24h,
+    fetchedAt: new Date().toISOString(),
+    technicals,
+    venue: "dex",
+    dex: {
+      network: pool.network,
+      dexId: pool.dexId,
+      poolAddress: pool.poolAddress,
+      liquidityUsd: pool.liquidityUsd,
+      historyHours: candles.length,
+    },
+  };
+}
+
 // ─── Technical Indicators ─────────────────────────────────────────────────────
 
 function computeTechnicals(closes: number[], candles: Candle[]): Technicals {
@@ -280,24 +400,39 @@ function round(n: number): number {
 
 /** Compact one-line summary for prompting / logging. */
 export function describeMarket(m: MarketSnapshot): string {
+  const isDex = m.venue === "dex";
+  // DEX prices are often sub-cent — don't truncate to 0 with toLocaleString.
+  const px = m.price < 1 ? m.price.toPrecision(4) : m.price.toLocaleString();
   const base =
-    `${m.symbol} @ $${m.price.toLocaleString()} ` +
+    `${m.symbol} @ $${px} ` +
     `(${m.priceChangePct24h >= 0 ? "+" : ""}${m.priceChangePct24h.toFixed(2)}% 24h, ` +
-    `range $${m.low24h.toLocaleString()}–$${m.high24h.toLocaleString()}, ` +
-    `vol ${m.volume24h.toLocaleString(undefined, { maximumFractionDigits: 0 })})`;
+    `vol $${m.volume24h.toLocaleString(undefined, { maximumFractionDigits: 0 })})`;
+
+  // DEX risk header — the agent and verifier must see thin liquidity / fresh
+  // pools up front. This is the danger that makes the degen play tempting.
+  const dexLine = isDex && m.dex
+    ? `\n⚠ ON-CHAIN ${m.dex.network}/${m.dex.dexId}: liquidity $${m.dex.liquidityUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}, ` +
+      `only ${m.dex.historyHours}h of history — thin liquidity means high slippage, exit risk, and possible manipulation/rug. Treat with extreme skepticism.`
+    : "";
 
   const t = m.technicals;
-  if (!t) return base;
+  if (!t) {
+    return base + dexLine + (isDex ? "\n(Insufficient candle history for reliable technicals.)" : "");
+  }
 
   const streak =
     t.consecutiveCloses === 0
       ? "no streak"
-      : `${Math.abs(t.consecutiveCloses)}d ${t.consecutiveCloses > 0 ? "up" : "down"} streak`;
+      : `${Math.abs(t.consecutiveCloses)} ${isDex ? "h" : "d"} ${t.consecutiveCloses > 0 ? "up" : "down"} streak`;
+  // On DEX the "periods" are hours, not days — label honestly so neither the
+  // agent nor the verifier mistakes an hourly RSI for a daily one.
+  const u = isDex ? "h" : "d";
+  const ma = isDex ? ["MA7h", "MA30h"] : ["SMA7", "SMA30"];
 
   return (
-    `${base}\n` +
-    `Trend: ${t.trend.toUpperCase()} | 7d ${t.change7dPct >= 0 ? "+" : ""}${t.change7dPct}%, 14d ${t.change14dPct >= 0 ? "+" : ""}${t.change14dPct}% | ` +
-    `SMA7 $${t.sma7.toLocaleString()} (price ${t.vsSma7}), SMA30 $${t.sma30.toLocaleString()} (price ${t.vsSma30}) | ` +
+    `${base}${dexLine}\n` +
+    `Trend: ${t.trend.toUpperCase()} | 7${u} ${t.change7dPct >= 0 ? "+" : ""}${t.change7dPct}%, 14${u} ${t.change14dPct >= 0 ? "+" : ""}${t.change14dPct}% | ` +
+    `${ma[0]} $${t.sma7.toLocaleString()} (price ${t.vsSma7}), ${ma[1]} $${t.sma30.toLocaleString()} (price ${t.vsSma30}) | ` +
     `RSI14 ${t.rsi14} ${t.rsi14 > 70 ? "(overbought)" : t.rsi14 < 30 ? "(oversold)" : ""} | ${streak}`
   );
 }

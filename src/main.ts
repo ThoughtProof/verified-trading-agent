@@ -9,14 +9,14 @@
 // reasoning, not market direction.
 
 import "dotenv/config";
-import { fetchMarketSnapshot, describeMarket, scanUniverse } from "./signal.js";
-import type { ScanCandidate } from "./signal.js";
+import { fetchMarketSnapshot, describeMarket, scanUniverse, scanDexUniverse, fetchDexSnapshot } from "./signal.js";
+import type { ScanCandidate, DexPool } from "./signal.js";
 import { generateTradeDecision, replanAfterBlock } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
 import { ReputationWriter } from "./reputation.js";
 import { runEnrichments, logEnrichments } from "./enrichments.js";
-import type { DecisionRecord } from "./types.js";
+import type { DecisionRecord, MarketSnapshot } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
 const THOUGHTPROOF_API_KEY = process.env.THOUGHTPROOF_API_KEY ?? "";
@@ -27,6 +27,16 @@ const THOUGHTPROOF_API_KEY = process.env.THOUGHTPROOF_API_KEY ?? "";
 const SCAN_ENABLED = (process.env.SCAN_ENABLED ?? "true").toLowerCase() !== "false";
 const SCAN_MIN_VOLUME_USD = Number(process.env.SCAN_MIN_VOLUME_USD ?? 10_000_000);
 const SCAN_TOP_N = Number(process.env.SCAN_TOP_N ?? 8);
+// DEX discovery (default ON): mix in trending on-chain pools (GeckoTerminal) —
+// where the real degen money and the real danger live (thin liquidity, fresh
+// pools, rugs). The tempting outsized gains autonomous agents chase. DEX_EVERY_N
+// = on every Nth cycle, evaluate a DEX token instead of a CEX one (default 3, so
+// roughly 1 in 3 cycles probes the on-chain tail). Set DEX_ENABLED=false to skip.
+const DEX_ENABLED = (process.env.DEX_ENABLED ?? "true").toLowerCase() !== "false";
+const DEX_EVERY_N = Math.max(1, Number(process.env.DEX_EVERY_N ?? 3));
+const DEX_MIN_LIQUIDITY_USD = Number(process.env.DEX_MIN_LIQUIDITY_USD ?? 250_000);
+const DEX_MIN_VOLUME_USD = Number(process.env.DEX_MIN_VOLUME_USD ?? 500_000);
+const DEX_TOP_N = Number(process.env.DEX_TOP_N ?? 6);
 // Fallback basket (used when SCAN_ENABLED=false, or if a scan returns nothing).
 // The agent evaluates one symbol per cycle, rotating through the list. SYMBOLS
 // (comma-list) wins; falls back to legacy single SYMBOL; defaults to major-caps.
@@ -64,15 +74,36 @@ function initReputation(): ReputationWriter | null {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Pick the symbol to evaluate this cycle.
+ * Pick + fetch the market to evaluate this cycle, returning a ready snapshot.
  *
- * Active discovery (default): scan the universe, log the leaderboard, and rotate
- * through the top-N strongest candidates (one per cycle) so the agent surveys
- * the real movers instead of fixating on a single hot coin. Falls back to the
- * static SYMBOLS basket if scanning is disabled or the scan returns nothing
- * (e.g. transient API failure) — the loop must never starve.
+ * Every DEX_EVERY_N-th cycle (when DEX_ENABLED) probes the on-chain tail:
+ * discover trending DEX pools, pick one of the top movers, fetch its OHLCV
+ * snapshot. Otherwise scans the Binance universe for relative strength and
+ * rotates through the top-N. Falls back to the static SYMBOLS basket if a scan
+ * fails or returns nothing — the loop must never starve.
  */
-async function selectSymbol(cycle: number): Promise<string> {
+async function selectMarket(cycle: number): Promise<MarketSnapshot> {
+  // ── DEX cycle: probe the on-chain tail ──────────────────────────────────────
+  if (DEX_ENABLED && cycle % DEX_EVERY_N === 0) {
+    try {
+      const pools: DexPool[] = await scanDexUniverse(DEX_MIN_LIQUIDITY_USD, DEX_MIN_VOLUME_USD, DEX_TOP_N);
+      if (pools.length > 0) {
+        console.log(`🜲 DEX scan — trending on-chain (liq ≥$${(DEX_MIN_LIQUIDITY_USD / 1e3).toFixed(0)}k, vol ≥$${(DEX_MIN_VOLUME_USD / 1e3).toFixed(0)}k):`);
+        const pick = (cycle / DEX_EVERY_N - 1) % pools.length;
+        pools.forEach((p, i) =>
+          console.log(
+            `   ${i === pick ? "→" : " "} ${p.name.padEnd(22)} ${p.changePct24h >= 0 ? "+" : ""}${p.changePct24h.toFixed(1)}%  vol $${(p.volumeUsd24h / 1e3).toFixed(0)}k  liq $${(p.liquidityUsd / 1e3).toFixed(0)}k  ${p.network}/${p.dexId}`,
+          ),
+        );
+        return await fetchDexSnapshot(pools[pick]);
+      }
+      console.warn("⚠️  DEX scan returned no pools above floors — falling back to CEX scan.");
+    } catch (err) {
+      console.error(`⚠️  DEX scan failed (${err instanceof Error ? err.message : err}) — falling back to CEX scan.`);
+    }
+  }
+
+  // ── CEX cycle: scan the Binance universe ────────────────────────────────────
   if (SCAN_ENABLED) {
     try {
       const candidates: ScanCandidate[] = await scanUniverse(SCAN_MIN_VOLUME_USD, SCAN_TOP_N);
@@ -83,22 +114,21 @@ async function selectSymbol(cycle: number): Promise<string> {
             `   ${i === (cycle - 1) % candidates.length ? "→" : " "} ${c.symbol.padEnd(13)} ${c.changePct24h >= 0 ? "+" : ""}${c.changePct24h.toFixed(2)}%  vol $${(c.quoteVolumeUsd / 1e6).toFixed(0)}M  rangePos ${(c.rangePosition * 100).toFixed(0)}%`,
           ),
         );
-        return candidates[(cycle - 1) % candidates.length].symbol;
+        return await fetchMarketSnapshot(candidates[(cycle - 1) % candidates.length].symbol);
       }
       console.warn("⚠️  Scan returned no liquid candidates — falling back to basket.");
     } catch (err) {
       console.error(`⚠️  Universe scan failed (${err instanceof Error ? err.message : err}) — falling back to basket.`);
     }
   }
-  return SYMBOLS[(cycle - 1) % SYMBOLS.length];
+  return await fetchMarketSnapshot(SYMBOLS[(cycle - 1) % SYMBOLS.length]);
 }
 
-async function runCycle(cycle: number, symbol: string, reputation: ReputationWriter | null): Promise<void> {
+async function runCycle(cycle: number, market: MarketSnapshot, reputation: ReputationWriter | null): Promise<void> {
   const ts = new Date().toISOString();
-  console.log(`\n──────── Cycle ${cycle} · ${symbol} · ${ts} ────────`);
+  console.log(`\n──────── Cycle ${cycle} · ${market.symbol}${market.venue === "dex" ? " [DEX]" : ""} · ${ts} ────────`);
 
-  // 1. Signal
-  const market = await fetchMarketSnapshot(symbol);
+  // 1. Signal (already fetched by the selector — CEX ticker or DEX pool)
   console.log(`📊 ${describeMarket(market)}`);
 
   // 2. Reasoning (Kimi K2.6)
@@ -228,7 +258,7 @@ async function main(): Promise<void> {
   console.log("Verified Trading Agent — Kimi K2.6 reasons, ThoughtProof verifies.");
   console.log(
     SCAN_ENABLED
-      ? `Mode: ${once ? "single cycle" : "loop"} · Discovery: universe scan (top ${SCAN_TOP_N}, ≥$${(SCAN_MIN_VOLUME_USD / 1e6).toFixed(0)}M vol) · Fallback: ${SYMBOLS.join(",")} · Log: ${LOG_PATH}`
+      ? `Mode: ${once ? "single cycle" : "loop"} · Discovery: CEX universe scan (top ${SCAN_TOP_N}, ≥$${(SCAN_MIN_VOLUME_USD / 1e6).toFixed(0)}M vol)${DEX_ENABLED ? ` + DEX probe every ${DEX_EVERY_N} cycles (liq ≥$${(DEX_MIN_LIQUIDITY_USD / 1e3).toFixed(0)}k)` : ""} · Fallback: ${SYMBOLS.join(",")} · Log: ${LOG_PATH}`
       : `Mode: ${once ? "single cycle" : "loop"} · Symbols: ${SYMBOLS.join(", ")} (rotating, scan OFF) · Log: ${LOG_PATH}`,
   );
   if (reputation) {
@@ -246,17 +276,17 @@ async function main(): Promise<void> {
   cycle = startCount + 1;
 
   if (once) {
-    // Single-cycle mode: discover (or fall back to) one symbol and evaluate it.
-    const symbol = await selectSymbol(cycle);
-    await runCycle(cycle, symbol, reputation);
+    // Single-cycle mode: discover (or fall back to) one market and evaluate it.
+    const market = await selectMarket(cycle);
+    await runCycle(cycle, market, reputation);
   } else {
     while (true) {
-      // Each cycle: discover the symbol (scan → top-N rotation), then evaluate.
-      const symbol = await selectSymbol(cycle);
+      // Each cycle: discover + fetch the market (DEX probe or CEX scan), then evaluate.
       try {
-        await runCycle(cycle, symbol, reputation);
+        const market = await selectMarket(cycle);
+        await runCycle(cycle, market, reputation);
       } catch (err) {
-        console.error(`Cycle ${cycle} (${symbol}) error:`, err instanceof Error ? err.message : err);
+        console.error(`Cycle ${cycle} error:`, err instanceof Error ? err.message : err);
       }
       cycle++;
       if (MAX_CYCLES > 0 && cycle - startCount > MAX_CYCLES) break;
