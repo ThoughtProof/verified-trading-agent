@@ -16,6 +16,7 @@ import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
 import { ReputationWriter } from "./reputation.js";
 import { runEnrichments, logEnrichments } from "./enrichments.js";
+import { executeViaMetaMask, getExecutionMode, type ExecutionResult } from "./metamask-executor.js";
 import type { DecisionRecord, MarketSnapshot } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
@@ -228,12 +229,47 @@ async function runCycle(cycle: number, market: MarketSnapshot, reputation: Reput
     }
   }
 
+  // 4b. MetaMask Agent Wallet integration (Layer 5 → Layer 2).
+  // For any directional decision we run the executor. On ALLOW it builds (and,
+  // if mm is installed+authed, validates via read-only `mm perps quote`) the
+  // real command. On BLOCK/UNCERTAIN it proves the headline: `mm` is NEVER
+  // invoked — the transaction never enters MetaMask's pipeline. No-op when
+  // MM_EXECUTION_MODE=off (default), so existing behaviour is unchanged.
+  let metamask: ExecutionResult | undefined;
+  if (!noTrade && getExecutionMode() !== "off") {
+    metamask = await executeViaMetaMask(verification.finalVerdict, decision, market);
+    console.log(`   🦊 MetaMask [${metamask.mode}/${metamask.status}]: ${metamask.note}`);
+    if (metamask.output) {
+      console.log(`      ↳ mm output: ${metamask.output.slice(0, 300)}${metamask.output.length > 300 ? "…" : ""}`);
+    }
+  }
+
   // 5. pot-sdk enrichments (polymarket crowd-intel, friend memory, graph)
   const enrichments = await runEnrichments(decision, verification);
   logEnrichments(enrichments);
 
   // 6. Track
-  const record: DecisionRecord = { timestamp: ts, cycle, market, decision, verification, outcome, noTrade, replan, enrichments };
+  const record: DecisionRecord = {
+    timestamp: ts,
+    cycle,
+    market,
+    decision,
+    verification,
+    outcome,
+    noTrade,
+    replan,
+    enrichments,
+    metamask: metamask
+      ? {
+          mode: metamask.mode,
+          allowed: metamask.allowed,
+          status: metamask.status,
+          note: metamask.note,
+          command: metamask.command ? { pretty: metamask.command.pretty, args: metamask.command.args } : null,
+          output: metamask.output,
+        }
+      : undefined,
+  };
   recordDecision(record);
 
   // 7. On-chain reputation (ERC-8004 giveFeedback, SKALE testnet — zero gas)

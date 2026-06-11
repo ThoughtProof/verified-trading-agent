@@ -162,4 +162,19 @@ export interface DecisionRecord {
   };
   /** pot-sdk enrichments (polymarket, friend, graph, pay). */
   enrichments?: EnrichmentResults;
+  /**
+   * MetaMask Agent Wallet execution trail (present when MM_EXECUTION_MODE != off
+   * and the decision was directional). Records whether `mm` was invoked, the
+   * exact command, and the outcome — the proof that BLOCKED decisions never
+   * reach MetaMask's pipeline. Typed loosely here to avoid a circular import
+   * with metamask-executor.ts; the full ExecutionResult shape is serialized.
+   */
+  metamask?: {
+    mode: "off" | "dryrun" | "live";
+    allowed: boolean;
+    status: string;
+    note: string;
+    command: { pretty: string; args: string[] } | null;
+    output: string | null;
+  };
 }
