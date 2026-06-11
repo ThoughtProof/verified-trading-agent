@@ -26,14 +26,21 @@ const ROOT = resolve(__dirname, "..");
 const inPath = resolve(process.argv[2] ?? `${ROOT}/runs/decisions.jsonl`);
 const outPath = resolve(process.argv[3] ?? `${ROOT}/runs/block-log.html`);
 
-// Methodology cutoff: only count decisions made AFTER the RV-situation pipeline
-// went live (commit 775085c, 2026-06-10T16:30Z). Before that, blocks carried no
-// substantive RV objections (rv_objections=0) — a different, weaker verification
-// regime. Mixing the two eras into one aggregate would misrepresent the current
-// system, even with a disclaimer. The raw decisions.jsonl keeps the full history;
-// pre-cutoff rows are archived to decisions-pre-rvfix.jsonl for the audit trail.
+// Methodology cutoff: only count decisions made AFTER the current agent+verifier
+// configuration went live. Two prior eras are excluded from the stats:
+//   1. pre-RV-fix (before 2026-06-10T16:30Z): blocks carried no substantive RV
+//      objections (rv_objections=0) — a weaker verification regime.
+//   2. pre-prompt-recalibration (before 2026-06-11T19:24Z): the agent ran a
+//      self-censoring system prompt ("staying flat is the default" + explicit
+//      knowledge it would be verified), so it never proposed a position the
+//      verifier could block — producing 0 blocks for reasons unrelated to the
+//      verifier's strength. The prompt was recalibrated to a neutral,
+//      profit-seeking trader that is blind to the verification layer, so the
+//      blocks it now produces reflect the verifier doing real work.
+// Mixing eras into one aggregate would misrepresent the current system. The raw
+// decisions.jsonl keeps the full history for audit; only the stats are filtered.
 // Override with BLOCKLOG_CUTOFF_ISO= (empty string disables the filter).
-const CUTOFF_ISO = process.env.BLOCKLOG_CUTOFF_ISO ?? "2026-06-10T16:30:00Z";
+const CUTOFF_ISO = process.env.BLOCKLOG_CUTOFF_ISO ?? "2026-06-11T19:24:00Z";
 
 interface BlockEntry {
   record: DecisionRecord;
@@ -342,7 +349,7 @@ function renderHtml(data: RenderData): string {
   ${blocksHtml}
 
   <footer>
-    Generated ${esc(data.generatedAt)} · worst single position drawdown −${data.worstSingle}% of equity · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).${data.excludedCount > 0 ? `<br><span class="muted">Methodology: stats count only decisions made after the RV verification pipeline was upgraded (2026-06-10T16:30Z). ${data.excludedCount} earlier decisions ran under a weaker setup (no substantive RV objections) and are excluded here but preserved in the raw decision log for audit.</span>` : ""}
+    Generated ${esc(data.generatedAt)} · worst single position drawdown −${data.worstSingle}% of equity · Verified Trading Agent · ERC-8004 #571 · reasoning by Kimi K2.6, verification by ThoughtProof (Sentinel → RV).${data.excludedCount > 0 ? `<br><span class="muted">Methodology: stats count only decisions made under the current configuration (from 2026-06-11T19:24Z). ${data.excludedCount} earlier decisions are excluded but preserved in the raw decision log for audit — they ran under either a weaker RV pipeline or a more conservative agent prompt that rarely attempted a position, neither of which represents the current system.</span>` : ""}
   </footer>
 </div>
 </body>
