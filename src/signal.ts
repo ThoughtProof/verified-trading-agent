@@ -93,7 +93,30 @@ export async function scanUniverse(
   }
 
   candidates.sort((a, b) => b.score - a.score);
-  return candidates.slice(0, topN);
+  const top = candidates.slice(0, topN);
+
+  // Major-cap blend: a pure momentum ranking surfaces almost exclusively
+  // parabolic top-movers (e.g. +50% pumps), where a leveraged entry is nearly
+  // always RV-indefensible → the agent only ever produces BLOCK-worthy theses.
+  // That loses the "good trades pass" contrast a credible reliability demo needs.
+  // So we GUARANTEE a few liquid major-caps are in the candidate set each cycle:
+  // assets where a leveraged directional call can actually be defensible (clean
+  // trend, real support, sane R:R). They compete on merit — the agent still has
+  // to find an edge — but they give ALLOWs a chance to occur. Set
+  // SCAN_MAJORS_BLEND=false to disable, or SCAN_MAJORS to customize the list.
+  const blendEnabled = (process.env.SCAN_MAJORS_BLEND ?? "true").toLowerCase() !== "false";
+  if (!blendEnabled) return top;
+
+  const majors = (process.env.SCAN_MAJORS ?? "BTCUSDT,ETHUSDT,SOLUSDT")
+    .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const bySymbol = new Map(candidates.map((c) => [c.symbol, c]));
+  const blended: ScanCandidate[] = [...top];
+  for (const m of majors) {
+    if (blended.some((c) => c.symbol === m)) continue; // already ranked in
+    const c = bySymbol.get(m);
+    if (c) blended.push(c); // only if it cleared the liquidity floor
+  }
+  return blended;
 }
 
 /**

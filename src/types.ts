@@ -2,6 +2,15 @@
 
 export type Verdict = "ALLOW" | "BLOCK" | "UNCERTAIN";
 
+/**
+ * RV verdict threshold + routing level. Higher stake demands higher reasoning
+ * soundness to ALLOW (micro 0.40 → critical 0.85). Mirrors the canonical
+ * cb4a-verify contract so both agents share one escalation model.
+ * "micro" runs the fast Sentinel-only gate; everything else escalates to the
+ * full Sentinel→RV adversarial pipeline.
+ */
+export type StakeLevel = "micro" | "low" | "medium" | "high" | "critical";
+
 /** Multi-day technical indicators computed from daily klines. */
 export interface Technicals {
   /** % change over the last 7 daily closes */
@@ -66,6 +75,12 @@ export interface TradeDecision {
   reasoning: string;
   /** Whether this is a high-stakes decision (routes to RV) or routine (Sentinel only). */
   highStakes: boolean;
+  /**
+   * Stake level driving the RV verdict threshold + routing (micro→critical).
+   * Derived from leverage AND notional, so a large unleveraged directional bet
+   * escalates too (not just 3x+ leverage). "micro" = Sentinel-only fast gate.
+   */
+  stakeLevel: StakeLevel;
 }
 
 /** Result from a ThoughtProof verification (Sentinel and/or RV). */

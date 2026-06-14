@@ -8,7 +8,14 @@ import type { DecisionRecord } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNS_DIR = join(__dirname, "..", "runs");
-const LOG_PATH = join(RUNS_DIR, "decisions.jsonl");
+// Log path is env-configurable so a second persona (e.g. PERSONA=aggressive)
+// can run in parallel with a fully isolated state file — it never contaminates
+// the disciplined line's record. Default is unchanged (decisions.jsonl).
+const LOG_PATH = process.env.DECISIONS_LOG
+  ? (process.env.DECISIONS_LOG.startsWith("/")
+      ? process.env.DECISIONS_LOG
+      : join(RUNS_DIR, process.env.DECISIONS_LOG))
+  : join(RUNS_DIR, "decisions.jsonl");
 
 function ensureDir(): void {
   if (!existsSync(RUNS_DIR)) mkdirSync(RUNS_DIR, { recursive: true });

@@ -61,5 +61,69 @@ module.exports = {
         NODE_ENV: "production",
       },
     },
+    {
+      // Aggressive persona — a SECOND, fully isolated paper line. Same engine,
+      // same verification pipeline, but PERSONA=aggressive (leveraged momentum
+      // seeker) writing to its OWN decisions log so it never contaminates the
+      // disciplined line's record. Onchain reputation writes are OFF here
+      // (no AGENT_ID/PRIVATE_KEY) — this is measurement-only paper until we
+      // decide to promote it with a dedicated ERC-8004 identity.
+      name: "vta-aggressive",
+      script: "./node_modules/.bin/tsx",
+      args: "src/main.ts",
+      cwd: __dirname,
+      interpreter: "none",
+      autorestart: true,
+      restart_delay: 30_000,
+      max_restarts: 50,
+      min_uptime: 60_000,
+      max_memory_restart: "300M",
+      time: true,
+      out_file: "./runs/pm2-aggressive-out.log",
+      error_file: "./runs/pm2-aggressive-error.log",
+      merge_logs: true,
+      env: {
+        NODE_ENV: "production",
+        PERSONA: "aggressive",
+        DECISIONS_LOG: "decisions-aggressive.jsonl",
+        // Explicitly blank the onchain identity so reputation writes stay OFF
+        // and never touch the disciplined line's agent #571.
+        AGENT_ID: "",
+        PRIVATE_KEY: "",
+        REPUTATION_PRIVATE_KEY: "",
+      },
+    },
+    {
+      // Conservative persona — a THIRD isolated paper line. Capital-preservation
+      // trader that takes only high-confluence, small (≤1-2x), hard-stopped
+      // positions. Its whole purpose is to produce the ALLOW half of the
+      // block-log: genuinely well-reasoned low-stake trades that RV can pass.
+      // We did NOT lower any threshold for it — the stake ladder now maps a 1x
+      // defined-risk trade to "low" (0.40) by real position risk, and sound
+      // reasoning earns a stable ALLOW. Isolated log + onchain OFF, same as
+      // aggressive, so it never touches the disciplined line's agent #571.
+      name: "vta-conservative",
+      script: "./node_modules/.bin/tsx",
+      args: "src/main.ts",
+      cwd: __dirname,
+      interpreter: "none",
+      autorestart: true,
+      restart_delay: 30_000,
+      max_restarts: 50,
+      min_uptime: 60_000,
+      max_memory_restart: "300M",
+      time: true,
+      out_file: "./runs/pm2-conservative-out.log",
+      error_file: "./runs/pm2-conservative-error.log",
+      merge_logs: true,
+      env: {
+        NODE_ENV: "production",
+        PERSONA: "conservative",
+        DECISIONS_LOG: "decisions-conservative.jsonl",
+        AGENT_ID: "",
+        PRIVATE_KEY: "",
+        REPUTATION_PRIVATE_KEY: "",
+      },
+    },
   ],
 };

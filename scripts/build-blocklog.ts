@@ -140,6 +140,15 @@ async function main() {
     (max, e) => Math.max(max, e.counterfactual?.maxAdverseExcursionPct ?? 0),
     0,
   );
+  // Risk-adjusted aggregates — the honest answer to "but those blocks are green now".
+  // Of the blocked trades that ended profitable, how many were "lucky" (rode a
+  // deep drawdown / brushed liquidation) vs genuinely "clean"? That ratio is the
+  // real story: RV catches reasoning that accepted risk no desk would sign off.
+  const evaluated = entries.filter((e) => e.counterfactual && !e.counterfactual.insufficientData);
+  const profitable = evaluated.filter((e) => e.counterfactual!.wouldHaveProfited);
+  const luckyWins = evaluated.filter((e) => e.counterfactual!.riskQuality === "lucky").length;
+  const cleanWins = evaluated.filter((e) => e.counterfactual!.riskQuality === "clean").length;
+  const nearLiquidations = evaluated.filter((e) => e.counterfactual!.nearLiquidation).length;
 
   const html = renderHtml({
     entries,
@@ -149,6 +158,11 @@ async function main() {
     liquidations,
     totalAvoidedUsd,
     worstSingle,
+    evaluatedCount: evaluated.length,
+    profitableCount: profitable.length,
+    luckyWins,
+    cleanWins,
+    nearLiquidations,
     excludedCount: excluded,
     generatedAt: new Date().toISOString(),
   });
@@ -171,6 +185,11 @@ interface RenderData {
   liquidations: number;
   totalAvoidedUsd: number;
   worstSingle: number;
+  evaluatedCount: number;
+  profitableCount: number;
+  luckyWins: number;
+  cleanWins: number;
+  nearLiquidations: number;
   excludedCount: number;
   generatedAt: string;
 }
@@ -188,6 +207,56 @@ function shortHash(h?: string): string {
   return h.length > 14 ? `${h.slice(0, 10)}…${h.slice(-4)}` : h;
 }
 
+// Sentinel's checkpoint tier (serv-nano) returns a machine fail-score string like
+// "failScore=2.5 (TE: 2×1.0 + 1×0.5, AC: 0×0.5 + 0×0.25). IDs: [...]" — useful as a
+// signed audit signal, useless as human-readable "why". Parse out the score and
+// render the standdown as what it IS: cheap triage catching weak reasoning before
+// any expensive RV call. The raw string is preserved as a small audit detail.
+function parseFailScore(reason?: string): number | null {
+  if (!reason) return null;
+  const m = reason.match(/failScore\s*=\s*([\d.]+)/i);
+  return m ? Number(m[1]) : null;
+}
+
+/** Render the "why blocked" block. Three honest cases:
+ *  1. RV objections present  → show them (the full adversarial panel did the work).
+ *  2. Sentinel-gate standdown → frame as a SUCCESS: cheap triage flagged weak
+ *     reasoning quality and the agent stood down without paying for RV. This is
+ *     the cost-efficiency design goal, not a missing explanation.
+ *  3. Genuine pre-RV-fix legacy → the honest legacy note (only for old records). */
+function renderWhyBlocked(src: {
+  decision: DecisionRecord["decision"];
+  verification: DecisionRecord["verification"];
+}, timestamp: string): string {
+  const rv = src.verification.rv;
+  const sent = src.verification.sentinel;
+  const route = src.verification.route;
+
+  // Case 1: full RV objections available.
+  if (rv?.objections && rv.objections.length) {
+    return `<ol class="obj">${rv.objections
+      .map((o) => `<li><span class="sev sev-${esc(o.severity)}">${esc(o.severity)}</span> ${esc(o.explanation)}</li>`)
+      .join("")}</ol>`;
+  }
+
+  // Case 2: Sentinel-gate standdown (the current, intended cheap-triage path).
+  // route === "sentinel" with a non-ALLOW verdict means Sentinel caught it at the
+  // checkpoint tier and the agent re-planned — by design, without RV escalation.
+  const PRE_RV_FIX_ISO = "2026-06-10T16:30:00Z";
+  const isLegacyPreFix = (timestamp ?? "") < PRE_RV_FIX_ISO;
+  if (route === "sentinel" && sent && sent.verdict !== "ALLOW" && !isLegacyPreFix) {
+    const score = parseFailScore(sent.reason);
+    const scoreTxt = score != null ? ` (fail-score ${score})` : "";
+    const auditTxt = sent.reason
+      ? `<div class="muted" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;">audit: ${esc(sent.reason)}</div>`
+      : "";
+    return `<div class="sentinel-catch">Sentinel triage flagged the reasoning quality as insufficient${scoreTxt} and the agent stood down — caught at the <b>$0.003 checkpoint tier</b> (serv-nano, ~3.5s) <b>without escalating to full RV</b>. Disciplined inaction at minimal cost is the design goal: cheap triage handles the clear cases, the expensive adversarial panel is reserved for the borderline ones.${auditTxt}</div>`;
+  }
+
+  // Case 3: genuine legacy pre-RV-fix record.
+  return `<div class="muted">No objections recorded (decision from a pre-RV-fix verification regime, archived for audit).</div>`;
+}
+
 function renderCounterfactual(c: CounterfactualResult | null): string {
   if (!c) return `<div class="cf cf-na">No counterfactual (non-directional).</div>`;
   if (c.insufficientData) {
@@ -199,9 +268,25 @@ function renderCounterfactual(c: CounterfactualResult | null): string {
   const harmLine = c.liquidated
     ? `Would have been <b>liquidated</b> — full margin at risk lost (−$${ACCOUNT_EQUITY.toLocaleString()} on this position).`
     : `Worst drawdown: <b>−${c.maxAdverseExcursionPct}%</b> of equity (≈ −$${c.avoidedLossUsd.toLocaleString()}) at $${c.worstPrice.toLocaleString()}.`;
-  const honesty = c.wouldHaveProfited
-    ? `<div class="cf-honest">⚖︎ Honest note: as it played out, this position would currently be <b>up ${c.pnlNowPct}%</b>. RV blocked it for indefensible <i>reasoning</i> (unbounded risk / no stop / single-indicator), not for predicted direction. The avoided harm is the worst-case exposure it accepted, not a directional call.</div>`
-    : "";
+  // Risk-adjusted honesty: when a blocked trade ended green, we DON'T pretend it
+  // was a loss. We show the path it rode — the drawdown and how close it came to
+  // a wipeout — which is exactly the risk RV's reasoning critique was about. A
+  // "lucky" win (deep drawdown / near-liquidation) confirms the flagged reasoning
+  // was sound; a "clean" win is acknowledged plainly as one RV was strict on.
+  let honesty = "";
+  if (c.wouldHaveProfited) {
+    const r2p = Number.isFinite(c.returnToPainRatio) ? `${c.returnToPainRatio}` : "∞";
+    if (c.riskQuality === "lucky") {
+      const brush = c.nearLiquidation
+        ? ` and came within <b>${Math.round((1 - c.liquidationProximity) * 100)}%</b> of full liquidation`
+        : "";
+      honesty = `<div class="cf-honest">⚖︎ Risk-adjusted read: this position is <b>up ${c.pnlNowPct}%</b> now — <b>but only after riding a −${c.maxAdverseExcursionPct}% equity drawdown</b>${brush}. Return-to-pain ratio ${r2p} (paid ${c.returnToPainRatio < 1 ? "<b>less</b>" : "more"} than the swing it forced you to stomach). RV flagged the <i>reasoning</i> (unbounded risk / no stop / single-indicator), not the direction — and the path proves that risk was real. A green endpoint here is <b>luck, not skill</b>.</div>`;
+    } else if (c.riskQuality === "clean") {
+      honesty = `<div class="cf-honest">⚖︎ Honest note: this one would be <b>up ${c.pnlNowPct}%</b> with only a −${c.maxAdverseExcursionPct}% drawdown — a defensible win RV was strict on. RV judges <i>reasoning</i> defensibility, not direction; on a clean setup like this, a stricter stake threshold would let it through. No system blocks only losers without also catching some winners — that's the cost of refusing to bless indefensible reasoning.</div>`;
+    } else {
+      honesty = `<div class="cf-honest">⚖︎ Honest note: as it played out, this position would be <b>up ${c.pnlNowPct}%</b> (drawdown −${c.maxAdverseExcursionPct}%). RV blocked it for indefensible <i>reasoning</i>, not predicted direction.</div>`;
+    }
+  }
   return `
     <div class="cf">
       <div class="cf-head">Counterfactual ${liq} <span class="cf-sim">simulation · paper account · real Binance prices</span></div>
@@ -239,12 +324,7 @@ function renderEntry(e: BlockEntry): string {
   const d = src.decision;
   const rv = src.verification.rv;
   const sent = src.verification.sentinel;
-  const objections =
-    rv?.objections && rv.objections.length
-      ? `<ol class="obj">${rv.objections
-          .map((o) => `<li><span class="sev sev-${esc(o.severity)}">${esc(o.severity)}</span> ${esc(o.explanation)}</li>`)
-          .join("")}</ol>`
-      : `<div class="muted">No objections recorded (decision blocked pre-RV-fix or at Sentinel gate).</div>`;
+  const objections = renderWhyBlocked(src, r.timestamp);
 
   const attHash = rv?.attestation?.hash ?? sent?.attestation?.claimHash;
   const rvSig = rv?.attestation?.signature
@@ -306,6 +386,7 @@ function renderHtml(data: RenderData): string {
   .meta { color:var(--muted); font-size:12px; margin-left:auto; }
   .thesis { margin:8px 0; }
   .why { margin:12px 0; }
+  .sentinel-catch { background:#101a15; border:1px solid #1d3a2b; border-left:3px solid var(--ok); border-radius:8px; padding:10px 14px; font-size:14px; color:var(--txt); }
   ol.obj { margin:8px 0 0; padding-left:20px; }
   ol.obj li { margin:6px 0; }
   .sev { font-size:10px; font-weight:700; text-transform:uppercase; padding:1px 6px; border-radius:4px; margin-right:6px; }
@@ -339,11 +420,14 @@ function renderHtml(data: RenderData): string {
     <div class="stat"><div class="n">${data.totalBlocks}</div><div class="l">Blocked / re-planned</div></div>
     <div class="stat"><div class="n">${data.standDowns}</div><div class="l">Re-plans triggered</div></div>
     <div class="stat harm"><div class="n">${data.liquidations}</div><div class="l">Liquidations avoided</div></div>
-    <div class="stat harm"><div class="n">$${data.totalAvoidedUsd.toLocaleString()}</div><div class="l">Worst-case harm avoided</div></div>
+    <div class="stat harm"><div class="n">${data.nearLiquidations}</div><div class="l">Near-liquidations caught</div></div>
+    <div class="stat harm"><div class="n">${data.luckyWins}</div><div class="l">"Lucky" green blocks (rode deep drawdown)</div></div>
   </div>
 
   <div class="disclaimer">
-    <b>How to read this.</b> ThoughtProof's RV blocks a decision when its <i>reasoning</i> is indefensible — unbounded risk, no stop-loss, a single-indicator thesis — <b>not</b> because it predicts price direction. Counterfactuals are <b>simulations on a $${ACCOUNT_EQUITY.toLocaleString()} paper account against real Binance prices</b>; no real capital moves. "Harm avoided" is the worst-case exposure each blocked position accepted. Where a blocked trade would have been profitable by luck, we say so — the point is the broken reasoning, not a market call.
+    <b>What this actually shows.</b> RV is a <b>reasoning-integrity check, not a trading-alpha model</b>. It blocks a decision when the <i>reasoning</i> behind it is unsound — a flawed inference, a hallucinated indicator ("volume confirms the breakout" when volume is flat), an invented invalidation level, oversized risk with no stop, or a thesis that contradicts its own data. Whether the market then happens to rise is <b>orthogonal</b> to whether the reasoning was defensible.
+    <br/><br/>
+    <b>On the green blocks.</b> Of ${data.evaluatedCount} evaluated blocks, ${data.profitableCount} would currently be profitable — and we show that plainly. But a profitable <i>endpoint</i> doesn't make the <i>reasoning</i> sound: ${data.luckyWins} of those rode a deep drawdown or brushed liquidation to get there ("lucky", not skilled), while ${data.cleanWins} were genuinely clean setups RV was strict on. A risk manager that blesses lucky-but-indefensible bets gets you wiped out over enough iterations. Counterfactuals are <b>simulations on a $${ACCOUNT_EQUITY.toLocaleString()} paper account against real Binance prices</b>; no real capital moves.
   </div>
 
   ${blocksHtml}

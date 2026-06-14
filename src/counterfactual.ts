@@ -65,6 +65,31 @@ export interface CounterfactualResult {
   wouldHaveProfited: boolean;
   /** True if we had insufficient forward data to evaluate yet. */
   insufficientData: boolean;
+  // ─── Risk-adjusted metrics (the point: a trade can end green yet be a BAD,
+  //     undefendable bet because of the drawdown path it rode to get there) ───
+  /**
+   * How close the position came to liquidation, as a fraction (0–1+) of the
+   * liquidation threshold. 0.9 = got 90% of the way to a wipeout. ≥1 = liquidated.
+   * This is the honest risk signal a raw "profit now" number hides.
+   */
+  liquidationProximity: number;
+  /** True when the position rode within 20% of a full liquidation at any point. */
+  nearLiquidation: boolean;
+  /**
+   * Return-to-pain ratio: final PnL% divided by the worst drawdown% it suffered.
+   * <1 means the trade paid less than the equity swing it forced you to stomach.
+   * Negative/zero drawdown-free profit returns Infinity (a genuinely clean win).
+   */
+  returnToPainRatio: number;
+  /**
+   * Risk verdict on the PATH, independent of the lucky endpoint:
+   *  - "clean": profited with shallow drawdown (<10% equity) — a defensible win.
+   *  - "lucky": ended green but rode a deep drawdown (≥25%) or near-liquidation —
+   *    profit by luck, not skill; the reasoning RV flagged was still right.
+   *  - "harmful": ended in loss or liquidation.
+   *  - "modest": small outcome either way, shallow path.
+   */
+  riskQuality: "clean" | "lucky" | "modest" | "harmful";
 }
 
 interface Candle {
@@ -171,6 +196,10 @@ export async function estimateCounterfactual(
     avoidedLossUsd: 0,
     wouldHaveProfited: false,
     insufficientData: true,
+    liquidationProximity: 0,
+    nearLiquidation: false,
+    returnToPainRatio: 0,
+    riskQuality: "modest",
   };
 
   const candles = dexSource
@@ -219,6 +248,41 @@ export async function estimateCounterfactual(
     (endMs - candles[0].openTime) / 3_600_000,
   );
 
+  // ─── Risk-adjusted path metrics ───────────────────────────────────────────
+  // liquidationProximity: how far down the road to a wipeout the position rode.
+  // worstAdversePct is in PRICE terms; liquidationThresholdPct is too, so the
+  // ratio is apples-to-apples. ≥1 means it actually liquidated.
+  const liquidationProximity = liquidated
+    ? 1
+    : liquidationThresholdPct > 0 && Number.isFinite(liquidationThresholdPct)
+      ? round(worstAdversePct / liquidationThresholdPct)
+      : 0;
+  const nearLiquidation = liquidationProximity >= 0.8;
+
+  // returnToPain: final PnL vs the worst equity drawdown it forced you to ride.
+  // A +16% trade that went 27% underwater scores 0.59 — it paid less than the
+  // pain. A clean win with negligible drawdown returns a large/Infinity ratio.
+  const returnToPainRatio =
+    maxAdverseEquityPct > 0.01
+      ? round(pnlNowPct / maxAdverseEquityPct)
+      : pnlNowPct > 0
+        ? Infinity
+        : 0;
+
+  // riskQuality: the honest verdict on the PATH, not the lucky endpoint. This is
+  // what defuses "but it's green now" — a green trade that rode a 30% drawdown
+  // or brushed liquidation is "lucky", and the reasoning RV flagged was sound.
+  let riskQuality: CounterfactualResult["riskQuality"];
+  if (liquidated || pnlNowPct <= 0) {
+    riskQuality = "harmful";
+  } else if (nearLiquidation || maxAdverseEquityPct >= 25) {
+    riskQuality = "lucky"; // ended green, but by riding risk no desk would sign off
+  } else if (maxAdverseEquityPct < 10 && rawPnlPct >= 3) {
+    riskQuality = "clean"; // genuinely defensible win
+  } else {
+    riskQuality = "modest";
+  }
+
   return {
     ...base,
     lastPrice: lastClose,
@@ -231,6 +295,10 @@ export async function estimateCounterfactual(
     avoidedLossUsd: Math.round(avoidedLossUsd),
     wouldHaveProfited,
     insufficientData: false,
+    liquidationProximity,
+    nearLiquidation,
+    returnToPainRatio,
+    riskQuality,
   };
 }
 

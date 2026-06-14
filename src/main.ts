@@ -11,7 +11,7 @@
 import "dotenv/config";
 import { fetchMarketSnapshot, describeMarket, scanUniverse, scanDexUniverse, fetchDexSnapshot } from "./signal.js";
 import type { ScanCandidate, DexPool } from "./signal.js";
-import { generateTradeDecision, replanAfterBlock } from "./reasoning.js";
+import { generateTradeDecision, replanAfterBlock, ACTIVE_PERSONA } from "./reasoning.js";
 import { verifyDecision } from "./verification.js";
 import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./tracking.js";
 import { ReputationWriter } from "./reputation.js";
@@ -138,7 +138,7 @@ async function runCycle(cycle: number, market: MarketSnapshot, reputation: Reput
     console.log(`🤖 Agent: stays FLAT — ${decision0.thesis}`);
   } else {
     console.log(
-      `🤖 Agent wants: ${decision0.action} [${decision0.side} ${decision0.leverage}x, ${decision0.highStakes ? "HIGH-STAKES→RV" : "routine→Sentinel"}]`,
+      `🤖 Agent wants: ${decision0.action} [${decision0.side} ${decision0.leverage}x, stake=${decision0.stakeLevel} → ${decision0.stakeLevel === "micro" ? "Sentinel-only" : "Sentinel→RV"}]`,
     );
     console.log(`   Thesis: ${decision0.thesis}`);
   }
@@ -292,6 +292,7 @@ async function main(): Promise<void> {
   const reputation = initReputation();
 
   console.log("Verified Trading Agent — Kimi K2.6 reasons, ThoughtProof verifies.");
+  console.log(`Persona: ${ACTIVE_PERSONA.toUpperCase()}`);
   console.log(
     SCAN_ENABLED
       ? `Mode: ${once ? "single cycle" : "loop"} · Discovery: CEX universe scan (top ${SCAN_TOP_N}, ≥$${(SCAN_MIN_VOLUME_USD / 1e6).toFixed(0)}M vol)${DEX_ENABLED ? ` + DEX probe every ${DEX_EVERY_N} cycles (liq ≥$${(DEX_MIN_LIQUIDITY_USD / 1e3).toFixed(0)}k)` : ""} · Fallback: ${SYMBOLS.join(",")} · Log: ${LOG_PATH}`
