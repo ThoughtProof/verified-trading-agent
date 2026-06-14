@@ -205,22 +205,18 @@ export async function verifyDecision(
 
   const sentinel = await callSentinel(decision, apiKey);
 
-  // Sentinel blocks → stop. No need to pay for RV.
-  if (sentinel.verdict === "BLOCK") {
-    return {
-      route: "sentinel",
-      finalVerdict: "BLOCK",
-      sentinel,
-      latencyMs: Date.now() - start,
-    };
-  }
+  // Routing policy (2026-06-14): RV escalation is reserved for CRITICAL stake
+  // ONLY. Everything below runs as a Sentinel-only gate — now defensible
+  // because Sentinel exposes structured per-step objections (not just a
+  // failScore string), so its ALLOW/BLOCK/UNCERTAIN carries actionable
+  // substance. Aggressive cost-optimized posture: pay for the ~$0.02-0.08 RV
+  // adversarial panel only when capital-at-risk is highest.
+  const escalateToRv = decision.stakeLevel === "critical";
 
-  // Routine (low-stakes) decision that passed Sentinel → done.
-  // "micro" stake (flat / no-op) never reaches here as directional, but guard
-  // anyway: micro = Sentinel-only fast gate, no RV escalation.
-  // Note: sentinel.verdict here is ALLOW or UNCERTAIN. UNCERTAIN is fail-closed
-  // downstream (main.ts treats anything != ALLOW as "not executed").
-  if (decision.stakeLevel === "micro") {
+  if (!escalateToRv) {
+    // Sentinel is the sole judge below critical — its verdict is final
+    // (BLOCK, ALLOW or UNCERTAIN). UNCERTAIN is fail-closed downstream
+    // (main.ts treats anything != ALLOW as "not executed").
     return {
       route: "sentinel",
       finalVerdict: sentinel.verdict,
@@ -229,12 +225,12 @@ export async function verifyDecision(
     };
   }
 
-  // Everything else (medium/high/critical) → escalate to RV adversarial
-  // verification. RV applies the stake-calibrated threshold (medium 0.65 →
-  // critical 0.85), so a large 1x directional bet is now verified too — not
-  // just 3x+ leverage. This is the fix for the SKALE agent resting on
-  // Sentinel's UNCERTAIN default.
-  // (Sentinel already passed the BLOCK gate above, so only RV can still BLOCK here.)
+  // CRITICAL stake → Sentinel is TRIAGE, not the final judge. A lone ~83%
+  // Nano (checkpoint tier) should not hold final BLOCK authority over the
+  // largest capital decisions — so even a Sentinel BLOCK escalates to the RV
+  // adversarial panel, and RV's verdict leads. RV applies its strictest
+  // stake-calibrated threshold (critical 0.85). Safety is preserved: RV is
+  // itself fail-closed + stake-calibrated.
   const rv = await callRV(decision, apiKey, situation);
 
   // Conservative merge: BLOCK > UNCERTAIN > ALLOW
