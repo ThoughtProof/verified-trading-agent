@@ -66,7 +66,7 @@ async function callSentinel(
 async function callRV(
   decision: TradeDecision,
   apiKey: string,
-  situation?: string,
+  situation?: string, // action-free market snapshot (describeMarket) — see body
 ): Promise<NonNullable<VerificationResult["rv"]>> {
   const res = await fetch(RV_URL, {
     method: "POST",
@@ -74,19 +74,25 @@ async function callRV(
     body: JSON.stringify({
       claim: `${decision.action}. Thesis: ${decision.thesis}`,
       context: `Autonomous crypto trading agent, $50k perpetual account. Full reasoning chain: ${decision.reasoning}`,
-      // The decision SITUATION (market data) without the chosen action.
-      // The RV generator panel forms independent positions on this situation
-      // first, then our decision is compared against them — real disagreement,
-      // meaningful mdi. Without it, generators only see a static meta-question
-      // (pot-sdk deliberately hides `output` from generators: out-of-band design).
-      ...(situation
-        ? {
-            situation:
-              `An autonomous crypto trading agent (simulated $50k perpetual account) must decide each cycle: ` +
-              `go long, go short, or stay flat — and at what leverage. Current market:\n${situation}`,
-          }
-        : {}),
+      // SEND action-free `situation` (the raw market snapshot from describeMarket).
+      // 2026-06-14 60-call A/B (4 cases x 3 framings x 5 runs, manually audited):
+      //   - NO situation: 15% of runs FULLY HALLUCINATED a phantom decision
+      //     (invented "capital investment project", NPV, "$50M loss", discount
+      //     rates) and critiqued that instead of the trade. This is the demo-killer
+      //     and the exact failure mode we sell RV to catch.
+      //   - CLEAN situation (this): 0% fabrication; objections were coherent and
+      //     often sharp (caught an arithmetically wrong R/R, funding-rate omission,
+      //     undefined stop distance). ~20% had one weak "I wasn't given the
+      //     decision" objection out of three — tolerable, not fabrication.
+      // The earlier "do NOT send situation" note was based on too few runs and is
+      // WRONG. `situation` MUST be action-free (market data only, no buy/sell/long/
+      // short) — describeMarket already guarantees this. Do not re-add the action.
+      ...(situation && situation.trim() ? { situation: situation.trim() } : {}),
       speed: "standard",
+      // stakeLevel drives RV's verdict threshold (micro 0.40 → critical 0.85).
+      // Mirrors cb4a-verify: higher stake demands sounder reasoning to ALLOW.
+      // Without this, RV used its default threshold regardless of position risk.
+      stakeLevel: decision.stakeLevel,
       // Request the ECDSA-signed onchain proof (free — signing only, no extra
       // model cost). Without this the RV verdict carries NO signature and the
       // block-log's "signed verdict" claim rests on Sentinel hashes alone.
@@ -177,9 +183,11 @@ export async function verifyDecision(
   }
 
   // Routine (low-stakes) decision that passed Sentinel → done.
+  // "micro" stake (flat / no-op) never reaches here as directional, but guard
+  // anyway: micro = Sentinel-only fast gate, no RV escalation.
   // Note: sentinel.verdict here is ALLOW or UNCERTAIN. UNCERTAIN is fail-closed
   // downstream (main.ts treats anything != ALLOW as "not executed").
-  if (!decision.highStakes) {
+  if (decision.stakeLevel === "micro") {
     return {
       route: "sentinel",
       finalVerdict: sentinel.verdict,
@@ -188,7 +196,11 @@ export async function verifyDecision(
     };
   }
 
-  // High-stakes → escalate to RV adversarial verification.
+  // Everything else (medium/high/critical) → escalate to RV adversarial
+  // verification. RV applies the stake-calibrated threshold (medium 0.65 →
+  // critical 0.85), so a large 1x directional bet is now verified too — not
+  // just 3x+ leverage. This is the fix for the SKALE agent resting on
+  // Sentinel's UNCERTAIN default.
   // (Sentinel already passed the BLOCK gate above, so only RV can still BLOCK here.)
   const rv = await callRV(decision, apiKey, situation);
 
