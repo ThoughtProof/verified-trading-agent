@@ -305,8 +305,13 @@ function parseDecision(content: string): {
  */
 function classifyStake(side: "long" | "short" | "flat", leverage: number): StakeLevel {
   if (side === "flat") return "micro";
-  if (leverage >= 4) return "critical";
-  if (leverage >= 3) return "high";
-  if (leverage >= 2) return "medium";
-  return "low";
+  // Routing + strictness ladder (2026-06-14). RV escalation fires ONLY at
+  // critical (≥10x) — genuine wipeout-risk leverage on the $50k perp account.
+  // Below that, Sentinel is the sole gate (now defensible: it returns
+  // structured objections). Leverage still scales RV's strictness threshold
+  // when RV does run.
+  if (leverage >= 10) return "critical"; // ≥10x → RV
+  if (leverage >= 6) return "high";      // 6-9x: aggressive, Sentinel-only
+  if (leverage >= 3) return "medium";    // 3-5x: moderate
+  return "low";                          // 1-2x: conservative
 }
