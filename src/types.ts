@@ -95,6 +95,16 @@ export interface VerificationResult {
     verdict: Verdict;
     confidence: number;
     reason: string;
+    /**
+     * Structured per-step objections from Sentinel /sentinel/verify (added
+     * 2026-06-14): gold-step criterion, predicate, score, quote + a
+     * human-readable reasoning sentence. The actionable substance behind a
+     * Sentinel gate — fed to the agent on a Sentinel-only block/replan.
+     */
+    objections: Array<{
+      severity: "low" | "medium" | "high" | "critical";
+      explanation: string;
+    }>;
     /** Cryptographic proof from Sentinel — the evidence anchor for the block/allow. */
     attestation?: {
       prepared?: boolean;

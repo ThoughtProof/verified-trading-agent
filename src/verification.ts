@@ -26,6 +26,38 @@ function normalizeVerdict(v: unknown): Verdict {
   return "UNCERTAIN";
 }
 
+type SentinelObjection = { severity: "low" | "medium" | "high" | "critical"; explanation: string };
+
+/**
+ * Map Sentinel /sentinel/verify `objections[]` into the agent's objection shape
+ * so a Sentinel-only gate can feed the agent the SAME quality of re-plan signal
+ * RV provides. Sentinel emits { step_id, criterion, score, predicate, quote,
+ * reasoning }; keep only failing/uncertain steps (passing steps aren't
+ * objections) and translate predicate → severity. `reasoning` is already a
+ * human-readable sentence (Sentinel synthesizes one when the model omits prose).
+ */
+function mapSentinelObjections(raw: unknown): SentinelObjection[] {
+  if (!Array.isArray(raw)) return [];
+  const sev: Record<string, SentinelObjection["severity"]> = {
+    unsupported: "critical",
+    unfaithful: "critical",
+    partial: "medium",
+    weakly_faithful: "medium",
+    partially_faithful: "medium",
+    skipped: "low",
+  };
+  return raw
+    .filter((o) => {
+      const p = String(o?.predicate ?? "");
+      return p !== "supported" && p !== "faithful";
+    })
+    .map((o) => ({
+      severity: sev[String(o?.predicate ?? "")] ?? "medium",
+      explanation: String(o?.reasoning ?? o?.criterion ?? "").trim(),
+    }))
+    .filter((o) => o.explanation.length > 0);
+}
+
 async function callSentinel(
   decision: TradeDecision,
   apiKey: string,
@@ -49,6 +81,7 @@ async function callSentinel(
     verdict: normalizeVerdict(d.verdict),
     confidence: Number(d.confidence ?? 0),
     reason: String(d.reasoning ?? ""),
+    objections: mapSentinelObjections(d.objections),
     // M2 fix: carry the cryptographic proof through to the record — this is the
     // evidence anchor that makes "signed, non-refutable verdict" real, not a claim.
     attestation: att

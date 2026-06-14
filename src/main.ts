@@ -159,8 +159,14 @@ async function runCycle(cycle: number, market: MarketSnapshot, reputation: Reput
     decision.side !== "flat" &&
     (verification.finalVerdict === "BLOCK" || verification.finalVerdict === "UNCERTAIN");
   if (firstBlocked) {
+    // Prefer RV's objections (richest). On a Sentinel-only gate (no RV
+    // escalation), use Sentinel's structured per-step objections — now that
+    // /sentinel/verify exposes them — instead of the raw failScore string.
     const objections = (verification.rv?.objections ?? []).map((o) => o.explanation);
-    if (verification.sentinel?.reason && objections.length === 0) {
+    if (objections.length === 0 && verification.sentinel?.objections?.length) {
+      objections.push(...verification.sentinel.objections.map((o) => o.explanation));
+    }
+    if (objections.length === 0 && verification.sentinel?.reason) {
       objections.push(verification.sentinel.reason);
     }
     console.log(`↻ Re-planning after ${verification.finalVerdict} — feeding objections back to the agent...`);
