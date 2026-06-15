@@ -397,6 +397,14 @@ def main():
         f.write(html_content)
     print(f'✅ {os.path.abspath(output_path)}')
 
+    # Also copy to website-redesign for Vercel deploy
+    website_path = os.path.join(os.path.dirname(__file__), '..', '..', 'website-redesign', 'agent-log', 'index.html')
+    website_path = os.path.normpath(website_path)
+    if os.path.isdir(os.path.dirname(website_path)):
+        with open(website_path, 'w') as f:
+            f.write(html_content)
+        print(f'✅ → {website_path}')
+
 
 if __name__ == '__main__':
     main()
