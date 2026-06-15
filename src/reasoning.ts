@@ -184,7 +184,11 @@ export async function replanAfterBlock(
     ? objections.map((o, i) => `${i + 1}. ${o}`).join("\n")
     : "(no specific objections returned; the verifier could not confirm the reasoning was sound)";
 
-  const userMsg = `Live market snapshot:\n${describeMarket(market)}\n\nYour previous decision this cycle was ${verdict} by the independent verification layer.\n\nYour blocked decision:\n  action: ${blocked.action}\n  side: ${blocked.side}, leverage: ${blocked.leverage}\n  thesis: ${blocked.thesis}\n\nThe verifier's objections:\n${objectionList}\n\nRe-decide ONCE, now. Treat the objections as a skeptical risk committee's findings: either FIX the reasoning (e.g. size down, add an explicit invalidation/stop, wait for confluence) or — if the objections show there is no defensible edge — STAY FLAT. Staying flat is a perfectly good answer; do not force a trade to "win" the re-decision. You are NOT trying to convince the verifier; you are trying to make the decision a professional could defend. Your revised decision will be independently verified again.\n\nRespond ONLY with the same JSON object shape.`;
+  const verdictFraming = verdict === "BLOCK"
+    ? "BLOCKED — the verifier found serious flaws in your reasoning. The objections below are strongly supported."
+    : "flagged as UNCERTAIN — the verifier has concerns but is not certain your reasoning is wrong. The objections may or may not apply to this specific situation.";
+
+  const userMsg = `Live market snapshot:\n${describeMarket(market)}\n\nYour previous decision this cycle was ${verdictFraming}\n\nYour original decision:\n  action: ${blocked.action}\n  side: ${blocked.side}, leverage: ${blocked.leverage}\n  thesis: ${blocked.thesis}\n\nThe verifier's objections:\n${objectionList}\n\nRe-decide now. Consider each objection individually against the ACTUAL market data above:\n\nIf the objections expose genuine flaws (missing stop, fabricated numbers, unjustified sizing):\n→ Fix the reasoning: reduce size, add explicit invalidation, or STAY FLAT if there's no defensible edge.\n\nIf the objections DON'T apply to this specific situation (e.g. the data contradicts their premise, or they misread your thesis):\n→ REAFFIRM the trade with a revised thesis that directly addresses each objection, explaining specifically why it doesn't hold here. You may also adjust sizing downward as a risk-management concession even when reaffirming the direction.\n\nBoth outcomes are valid. A good trader sometimes stands down, sometimes pushes back with better reasoning. The test is whether you can defend the decision against the specific critique — not whether you agree with authority.\n\nYour revised decision will be independently verified again.\n\nRespond ONLY with the same JSON object shape.`;
 
   const res = await fetch(MOONSHOT_URL, {
     method: "POST",
@@ -199,7 +203,7 @@ export async function replanAfterBlock(
         { role: "user", content: userMsg },
       ],
       temperature: 1, // MUST be 1 for kimi-k2.6
-      max_tokens: 4000, // replan reasons more; needs headroom so the JSON isn't cut off
+      max_tokens: 8000, // replan needs reasoning headroom — 4000 cut off JSON (same fix as engine.ts)
     }),
   });
 

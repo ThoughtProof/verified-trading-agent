@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const JSONL = resolve(ROOT, "runs/decisions.jsonl");
-const BUILDER = resolve(__dirname, "build-blocklog.ts");
-const TSX = resolve(ROOT, "node_modules/.bin/tsx");
+const BUILDER = resolve(__dirname, "build-block-log-v2.py");
+const PYTHON = "python3";
 const DEBOUNCE_MS = 3_000;
 
 let timer: NodeJS.Timeout | null = null;
@@ -31,7 +31,7 @@ function build(): void {
     return;
   }
   building = true;
-  const proc = spawn(TSX, [BUILDER], { cwd: ROOT, stdio: "inherit" });
+  const proc = spawn(PYTHON, [BUILDER], { cwd: ROOT, stdio: "inherit" });
   proc.on("exit", (code) => {
     building = false;
     console.log(`[watch-blocklog] rebuild done (exit ${code}) @ ${new Date().toISOString()}`);

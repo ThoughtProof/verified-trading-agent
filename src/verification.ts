@@ -3,16 +3,17 @@
 // Verified live 2026-06-09 against real backends:
 //  - Sentinel: POST sentinel.thoughtproof.ai/sentinel/verify
 //      headers: X-Sentinel-Key; body {claim, evidence, mode, tier}
-//      mode "trade_execution" exists; tier "checkpoint" = $0.003, ~3.5s
-//      => {verdict, confidence, reasoning, attestation{claim_hash,...}, billing}
+//      mode "trade_execution"; tier "standard" = $0.005, ~1.3s (Nano→Pro cascade)
+//      => {verdict, confidence, reasoning, objections[], attestation{...}, billing}
 //  - RV: POST api.thoughtproof.ai/v1/check
 //      headers: X-API-Key; body {claim, context, tier}
 //      tier "standard" => {verdict, confidence, objections, durationMs, modelCount, mdi}
-//      ~49s standard (2-model adversarial). High-stakes only.
+//      ~49s standard (2-model adversarial). ALLOW trust-but-verify only.
 //
-// Routing: Sentinel first (cheap pre-execution gate). If Sentinel doesn't BLOCK
-// and the decision is high-stakes, escalate to RV. Conservative merge:
-// BLOCK > UNCERTAIN > ALLOW.
+// Routing v3 (2026-06-15): Sentinel is the sole gate for UNCERTAIN and BLOCK.
+// These return immediately with structured objections → agent Re-Plan Loop.
+// RV only fires for weak/critical-stake ALLOWs (trust-but-verify).
+// Conservative merge on RV path: BLOCK > UNCERTAIN > ALLOW.
 
 import type { TradeDecision, VerificationResult, Verdict } from "./types.js";
 
@@ -69,7 +70,7 @@ async function callSentinel(
       claim: decision.action,
       evidence: `Thesis: ${decision.thesis}\n\nReasoning: ${decision.reasoning}`,
       mode: "trade_execution",
-      tier: "checkpoint",
+      tier: "standard",
     }),
   });
   if (!res.ok) {
@@ -180,8 +181,16 @@ async function callRV(
 }
 
 /**
- * Verify a trade decision. Sentinel gate first; escalate to RV for high-stakes
- * decisions that survive Sentinel. Returns the merged result.
+ * Verify a trade decision. Sentinel Standard (Nano→Pro cascade) is the SOLE
+ * gate for UNCERTAIN and BLOCK verdicts — they return immediately with
+ * structured objections for the agent's Re-Plan Loop.
+ *
+ * RV escalation ($0.05-0.10, ~70s) is reserved ONLY for ALLOW trust-but-verify:
+ *   - Critical stake + Sentinel ALLOW → mandatory RV (too much capital for one gate)
+ *   - Weak-conviction ALLOW (<0.6, or <0.8 for high stake) → RV arbitrates
+ *
+ * This means UNCERTAIN never burns an RV call. The agent gets Sentinel's
+ * feedback (~1-3s, $0.005) and either revises or stands down.
  *
  * `situation` (optional): action-free description of the decision situation
  * (market snapshot). Passed to RV so its generator panel can form independent
@@ -205,18 +214,13 @@ export async function verifyDecision(
 
   const sentinel = await callSentinel(decision, apiKey);
 
-  // Routing policy (2026-06-14): RV escalation is reserved for CRITICAL stake
-  // ONLY. Everything below runs as a Sentinel-only gate — now defensible
-  // because Sentinel exposes structured per-step objections (not just a
-  // failScore string), so its ALLOW/BLOCK/UNCERTAIN carries actionable
-  // substance. Aggressive cost-optimized posture: pay for the ~$0.02-0.08 RV
-  // adversarial panel only when capital-at-risk is highest.
-  const escalateToRv = decision.stakeLevel === "critical";
-
-  if (!escalateToRv) {
-    // Sentinel is the sole judge below critical — its verdict is final
-    // (BLOCK, ALLOW or UNCERTAIN). UNCERTAIN is fail-closed downstream
-    // (main.ts treats anything != ALLOW as "not executed").
+  // --- Routing v3: UNCERTAIN/BLOCK stay Sentinel-final ---
+  // UNCERTAIN → return with objections for Re-Plan Loop.
+  // BLOCK → return with objections (hard or soft — agent sees the critique).
+  // In both cases, escalating to RV would just burn cost — the objections are
+  // already actionable. The Re-Plan Loop in main.ts feeds them back to the
+  // agent, who either revises or stands down.
+  if (sentinel.verdict === "UNCERTAIN" || sentinel.verdict === "BLOCK") {
     return {
       route: "sentinel",
       finalVerdict: sentinel.verdict,
@@ -225,19 +229,36 @@ export async function verifyDecision(
     };
   }
 
-  // CRITICAL stake → Sentinel is TRIAGE, not the final judge. A lone ~83%
-  // Nano (checkpoint tier) should not hold final BLOCK authority over the
-  // largest capital decisions — so even a Sentinel BLOCK escalates to the RV
-  // adversarial panel, and RV's verdict leads. RV applies its strictest
-  // stake-calibrated threshold (critical 0.85). Safety is preserved: RV is
-  // itself fail-closed + stake-calibrated.
+  // --- ALLOW: trust-but-verify for high-stakes ---
+  const stakeLevel = decision.stakeLevel ?? "high";
+  const escalateToRv = (() => {
+    // Critical stake: mandatory RV verification on any ALLOW
+    if (stakeLevel === "critical") return true;
+    // High stake: escalate if Sentinel's confidence is below threshold
+    if (stakeLevel === "high" && sentinel.confidence < 0.8) return true;
+    // Medium/low: escalate only on very weak conviction
+    if (sentinel.confidence < 0.6) return true;
+    return false;
+  })();
+
+  if (!escalateToRv) {
+    // Sentinel ALLOW with strong confidence — final.
+    return {
+      route: "sentinel",
+      finalVerdict: "ALLOW",
+      sentinel,
+      latencyMs: Date.now() - start,
+    };
+  }
+
+  // RV arbitrates the weak ALLOW.
   const rv = await callRV(decision, apiKey, situation);
 
-  // Conservative merge: BLOCK > UNCERTAIN > ALLOW
+  // RV verdict leads (Sentinel already ALLOW'd, so only RV can change the outcome).
   const finalVerdict: Verdict =
     rv.verdict === "BLOCK"
       ? "BLOCK"
-      : sentinel.verdict === "UNCERTAIN" || rv.verdict === "UNCERTAIN"
+      : rv.verdict === "UNCERTAIN"
         ? "UNCERTAIN"
         : "ALLOW";
 
