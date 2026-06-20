@@ -2,7 +2,9 @@
 
 **Status:** Working integration layer + standalone demo. Dry-run verified against
 the real `@metamask/agentic-cli` (v0.4.0). Live execution gated behind operator
-login. Built 2026-06-11, ahead of the MetaMask Early-Access kick-off.
+login. Built 2026-06-11, ahead of the MetaMask Early-Access kick-off. Extended
+2026-06-20 with the `action_authorization` mode + deterministic gate for
+wallet-drain vectors (see final section, ADR-0019 / PR #5).
 
 ## The one-sentence pitch
 
@@ -89,3 +91,53 @@ Symbol normalisation handles the agent's `BTCUSDT` / `PEPE/WETH` → bare base
 - The demo's verdicts are hand-set (ALLOW/BLOCK) to show both paths
   deterministically. In the live loop the verdict comes from real ThoughtProof
   Sentinel/RV calls.
+
+## Beyond perps: `action_authorization` for wallet-drain vectors (ADR-0019)
+
+The perps integration above is the *trading* slice. The higher-value wallet
+primitive is **`action_authorization`** — Sentinel's sixth mode — which catches
+the honest-but-over-scoped actions that faithfulness checks and Blockaid both
+pass. The axis is **action ↔ mandate**, not claim ↔ evidence: is this the
+minimal, in-scope execution of the authority the user actually granted?
+
+Validated against five drain vectors (live API, 5 runs each, 25 calls):
+**BLOCK 5/5 on every vector, 0 false ALLOWs.**
+
+| Drain vector | Blockaid | action_authorization |
+|---|---|---|
+| `approve(router, MAX_UINT256)` (honest "saves gas") | pass | BLOCK |
+| Prompt-injected recipient | pass | BLOCK |
+| Amount overshoot (200 → 2,000) | pass | BLOCK |
+| Malicious blanket permit | pass | BLOCK |
+| Bridge to unknown chain | pass | BLOCK |
+
+The same gate shape applies: the agent proposes an action, Sentinel verifies it
+in `action_authorization` mode **before** `mm` is invoked; on BLOCK the action
+never reaches MetaMask's pipeline.
+
+**Deterministic backstop.** The arithmetic overshoot vector (200 vs 2,000) is
+quantitative, and LLMs are non-deterministic on arithmetic. A deterministic gate
+(`thoughtproof-sentinel/src/engine/authorization-gate.ts`, the same
+neuro-symbolic split as the CB4A fact-checker) hard-checks amount / recipient /
+allowance violations *before* the LLM when the caller supplies a machine-readable
+mandate. Ships **shadow-mode first** (logs, does not gate); can only *add* blocks
+on unambiguous violations, never a false ALLOW. See ADR-0019 in the
+`thoughtproof-sentinel` repo (PR #5).
+
+**Request shape (action_authorization):**
+
+```jsonc
+POST /sentinel/verify
+{
+  "mode": "action_authorization",
+  "claim": "Granting an exact-amount approval of 200 USDC to the Uniswap router to execute the swap the user requested.",
+  "evidence": "MANDATE: user instructed 'swap 200 USDC for ETH on Uniswap'. ACTION: approve(0xUniswapRouter, 200 USDC). REASONING: ...",
+  "tier": "standard",
+  // optional machine-readable mandate → deterministic gate:
+  "mandate": {
+    "granted": { "maxAmount": 200, "asset": "USDC", "recipient": "0xUniswapRouter", "allowUnlimited": false },
+    "action":  { "amount": 200, "asset": "USDC", "recipient": "0xUniswapRouter", "allowance": 200 }
+  },
+  "gateMode": "shadow"  // 'enforce' to let the gate hard-BLOCK
+}
+```
