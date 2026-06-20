@@ -4,6 +4,9 @@ An autonomous crypto trading agent that **verifies every decision through [Thoug
 
 > We let an AI agent trade autonomously. ThoughtProof stops it from blowing up. Here's the receipt.
 
+> 📋 **Start here:** [**Sentinel Verified Agents — Trading & Wallet, side by side**](docs/sentinel-verified-agents.md)
+> — the shared map for this repo and its wallet counterpart, and why they pair.
+
 ## What this is
 
 Most agentic-trading demos show you a bot that (claims to) make money. This one is the opposite. It demonstrates the thing the whole category is missing: **trust.**
