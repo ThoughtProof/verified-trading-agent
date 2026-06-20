@@ -78,12 +78,14 @@ demo.
 - **Trading:** RV judges the *defensibility of the reasoning*, not market direction.
   We never claim profit. The metric is **avoided harm**: "the agent wanted N trades,
   Sentinel blocked M, here's why."
-- **Wallet:** A 10-run validation snapshot (2026-06-20) exposed that the LLM-only
-  path leaks the unlimited-permit vector ~1-in-10 (`drain-04`, 1 false ALLOW / 10) —
-  a 3-run smoke test had missed it. We publish the leak rather than hide it, and map
-  it to the **deterministic gate** (sentinel PR #5) that hard-BLOCKs that exact
-  vector via `unlimited_approval` *before* the LLM runs. The architectural claim is
-  the honest one: **the LLM layer is strong but not airtight at the boundary; the
+- **Wallet:** A 10-run validation snapshot (2026-06-20) first exposed that the
+  LLM-only path leaks the unlimited-permit vector ~1-in-10 (`drain-04`, 1 false
+  ALLOW / 10) — a 3-run smoke test had missed it. The **deterministic gate**
+  (sentinel PR #5) is now deployed and enforcing: it hard-BLOCKs that exact vector
+  via `unlimited_approval` *before* the LLM runs. The gated re-run is **50/50 BLOCK
+  on the drain class, 0 false ALLOWs**. We publish both numbers — the leak we found
+  and the fix we shipped — because the honest architectural claim is the strongest
+  one: **the LLM layer is strong but not airtight at the boundary; the
   deterministic layer is.**
 
 ---
