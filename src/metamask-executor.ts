@@ -151,10 +151,16 @@ function perpsBaseSize(leverage: number, price: number): number {
   return rounded > 0 ? rounded : 0.0001;
 }
 
-/** Is the `mm` binary installed and authenticated? Cheap, cached per process. */
+/** Is the `mm` binary installed and authenticated? Cheap, cached per process.
+ * NOTE: only a POSITIVE (authed) result is cached. A negative/transient
+ * `authed:false` is NOT cached — the mm session flickers intermittently, and
+ * caching a momentary failure would wedge the whole process into "not logged in"
+ * until restart. `force:true` bypasses the cache entirely (used by the live
+ * retry loop). */
 let _mmStatus: { available: boolean; authed: boolean } | null = null;
-export async function probeMm(): Promise<{ available: boolean; authed: boolean }> {
-  if (_mmStatus) return _mmStatus;
+export async function probeMm(force = false): Promise<{ available: boolean; authed: boolean }> {
+  if (_mmStatus && !force) return _mmStatus;
+  let status: { available: boolean; authed: boolean };
   try {
     // `mm auth status --json` exits non-zero if not logged in but proves the bin
     // exists. We split availability (bin runs) from authed (logged in).
@@ -164,18 +170,20 @@ export async function probeMm(): Promise<{ available: boolean; authed: boolean }
     let authed = false;
     try {
       const j = JSON.parse(stdout);
-      authed = Boolean(j.authenticated ?? j.loggedIn ?? j.status === "authenticated");
+      authed = Boolean(j.authenticated ?? j.loggedIn ?? j.data?.authenticated) || j.status === "authenticated";
     } catch {
       authed = /authenticated|logged.?in/i.test(stdout);
     }
-    _mmStatus = { available: true, authed };
+    status = { available: true, authed };
   } catch (err: unknown) {
     // ENOENT = not installed. Any other error = installed but `auth status`
     // failed (treat as available, not authed).
     const code = (err as { code?: string }).code;
-    _mmStatus = { available: code !== "ENOENT", authed: false };
+    status = { available: code !== "ENOENT", authed: false };
   }
-  return _mmStatus;
+  // Cache only a positive result; let transient negatives be re-probed.
+  if (status.available && status.authed) _mmStatus = status;
+  return status;
 }
 
 /**
@@ -265,28 +273,48 @@ export async function executeViaMetaMask(
     }
   }
 
-  // mode === "live": actually open the position. Guard hard.
-  if (!mm.available || !mm.authed) {
-    return result(
-      mode,
-      true,
-      cmd,
-      "execute-failed",
-      null,
-      `LIVE requested but mm ${!mm.available ? "not installed" : "not logged in"} — refusing to claim execution. Command was: ${cmd.pretty}`,
-    );
+  // mode === "live": actually open the position. Guard hard — but tolerate the
+  // mm session's intermittent flicker: a single transient "not logged in" must
+  // NOT kill a real ALLOW. Re-probe (cache-bypassing) up to 3× with short backoff
+  // before giving up. Only a persistent failure yields execute-failed.
+  if (!mm.available) {
+    return result(mode, true, cmd, "execute-failed", null,
+      `LIVE requested but mm not installed — refusing to claim execution. Command was: ${cmd.pretty}`);
   }
-  try {
-    // `mm perps open` prompts for confirmation interactively; in an autonomous
-    // loop we must pass --yes. Appended only on the live exec, never on the
-    // read-only quote or the pretty display command.
-    const liveArgs = [...cmd.args, "--yes"];
-    const { stdout, stderr } = await execFileAsync(cmd.bin, liveArgs, { timeout: 60000 });
-    return result(mode, true, cmd, "executed", (stdout || stderr || "").trim().slice(0, 4000), `✅ ALLOW → executed via MetaMask (${MM_NETWORK}): ${cmd.pretty} --yes`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return result(mode, true, cmd, "execute-failed", msg.slice(0, 4000), `Execution via mm failed: ${msg.slice(0, 200)}`);
+  let authed = mm.authed;
+  if (!authed) {
+    for (let attempt = 1; attempt <= 3 && !authed; attempt++) {
+      await new Promise((r) => setTimeout(r, attempt * 1500)); // 1.5s, 3s, 4.5s
+      authed = (await probeMm(true)).authed;
+    }
   }
+  if (!authed) {
+    return result(mode, true, cmd, "execute-failed", null,
+      `LIVE requested but mm not logged in after 3 re-probes — refusing to claim execution. Command was: ${cmd.pretty}`);
+  }
+  // `mm perps open` prompts for confirmation interactively; in an autonomous
+  // loop we must pass --yes. Appended only on the live exec, never on the
+  // read-only quote or the pretty display command.
+  const liveArgs = [...cmd.args, "--yes"];
+  // One retry if the OPEN itself trips the session flicker (probe was green but
+  // the session lapsed between probe and open — a real race we observed live).
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const { stdout, stderr } = await execFileAsync(cmd.bin, liveArgs, { timeout: 60000 });
+      return result(mode, true, cmd, "executed", (stdout || stderr || "").trim().slice(0, 4000), `✅ ALLOW → executed via MetaMask (${MM_NETWORK}): ${cmd.pretty} --yes`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const looksLikeAuth = /not logged in|unauthenticated|unauthorized|session|auth/i.test(msg);
+      if (attempt === 1 && looksLikeAuth) {
+        await new Promise((r) => setTimeout(r, 2500));
+        await probeMm(true); // nudge a fresh session read before the retry
+        continue;
+      }
+      return result(mode, true, cmd, "execute-failed", msg.slice(0, 4000), `Execution via mm failed: ${msg.slice(0, 200)}`);
+    }
+  }
+  // unreachable, but satisfies the type checker
+  return result(mode, true, cmd, "execute-failed", null, "Execution via mm failed: exhausted retries");
 }
 
 function result(
