@@ -296,18 +296,35 @@ export async function executeViaMetaMask(
   // loop we must pass --yes. Appended only on the live exec, never on the
   // read-only quote or the pretty display command.
   const liveArgs = [...cmd.args, "--yes"];
-  // One retry if the OPEN itself trips the session flicker (probe was green but
-  // the session lapsed between probe and open — a real race we observed live).
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Retries for two TRANSIENT failure classes observed live (each at most once):
+  //   1. Auth flicker — probe was green but the session lapsed between probe and
+  //      open (short backoff, re-probe, retry).
+  //   2. Venue liquidity — Hyperliquid testnet ORDER_REJECTED "could not
+  //      immediately match against any resting orders": the market order found
+  //      no counterparty in a thin testnet book (observed 18:05 06.07.). The
+  //      book usually refills within seconds; wait 30s and retry ONCE. A second
+  //      reject → honest execute-failed (fail-closed, never claim a fill).
+  // Anything else fails immediately — no blind retry loops on real errors.
+  let authRetryUsed = false;
+  let liquidityRetryUsed = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const { stdout, stderr } = await execFileAsync(cmd.bin, liveArgs, { timeout: 60000 });
       return result(mode, true, cmd, "executed", (stdout || stderr || "").trim().slice(0, 4000), `✅ ALLOW → executed via MetaMask (${MM_NETWORK}): ${cmd.pretty} --yes`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const looksLikeAuth = /not logged in|unauthenticated|unauthorized|session|auth/i.test(msg);
-      if (attempt === 1 && looksLikeAuth) {
+      const looksLikeLiquidity = /could not immediately match|ORDER_REJECTED/i.test(msg);
+      if (looksLikeAuth && !authRetryUsed) {
+        authRetryUsed = true;
         await new Promise((r) => setTimeout(r, 2500));
         await probeMm(true); // nudge a fresh session read before the retry
+        continue;
+      }
+      if (looksLikeLiquidity && !liquidityRetryUsed) {
+        liquidityRetryUsed = true;
+        console.log(`   ⏳ Venue rejected (no resting orders) — waiting 30s for the book to refill, then retrying once...`);
+        await new Promise((r) => setTimeout(r, 30000));
         continue;
       }
       return result(mode, true, cmd, "execute-failed", msg.slice(0, 4000), `Execution via mm failed: ${msg.slice(0, 200)}`);
