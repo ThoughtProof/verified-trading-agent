@@ -137,8 +137,10 @@ async function runCycle(cycle: number, market: MarketSnapshot, reputation: Reput
   if (decision0.side === "flat") {
     console.log(`🤖 Agent: stays FLAT — ${decision0.thesis}`);
   } else {
+    const rvOn = (process.env.RV_ENABLED ?? "true").toLowerCase() !== "false";
+    const route = !rvOn || decision0.stakeLevel === "micro" ? "Sentinel-only" : "Sentinel→RV";
     console.log(
-      `🤖 Agent wants: ${decision0.action} [${decision0.side} ${decision0.leverage}x, stake=${decision0.stakeLevel} → ${decision0.stakeLevel === "micro" ? "Sentinel-only" : "Sentinel→RV"}]`,
+      `🤖 Agent wants: ${decision0.action} [${decision0.side} ${decision0.leverage}x, stake=${decision0.stakeLevel} → ${route}]`,
     );
     console.log(`   Thesis: ${decision0.thesis}`);
   }

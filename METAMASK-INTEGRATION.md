@@ -34,17 +34,37 @@ This is Layer 5 (Decision Quality) composing cleanly with MetaMask's Layer 2/3
 
 - `src/metamask-executor.ts` — the integration layer. Maps a verified
   `TradeDecision` to an `mm perps` command. Three modes via `MM_EXECUTION_MODE`:
-  - `off` (default) — no MetaMask involvement; legacy simulated execution.
+  - `off` (default) — no MetaMask involvement; legacy simulated (paper) execution.
   - `dryrun` — on ALLOW, builds the exact `mm perps open` command and, if `mm`
     is installed + logged in, runs the **read-only** `mm perps quote` to validate
     against the real SDK. Never runs `mm perps open`.
-  - `live` — runs `mm perps open` on ALLOW. Requires `mm login` + a funded venue.
-    Intended to be flipped on by the operator with their own EA credentials.
+  - `live` — runs `mm perps open --yes` on ALLOW. Requires `mm login` + a funded
+    venue. **Defaults to testnet** (`MM_PERPS_NETWORK=testnet`) — a live run
+    against MetaMask's real rails with worthless testnet funds, no real capital.
+    Set `MM_PERPS_NETWORK=mainnet` only for a deliberate real-money run.
 - `scripts/demo-metamask-integration.ts` — standalone proof. Feeds one
   defensible + one indefensible decision through the executor and shows the
   headline: BLOCK suppresses the `mm` call entirely.
+- `scripts/verify-mm-command.ts` — quick offline check of the command mapping
+  (base-asset size, `--network testnet`, symbol normalisation). No API, no login.
 - Wired into `src/main.ts` step 4b — every directional decision in the live loop
   now also runs the executor (no-op when `MM_EXECUTION_MODE=off`).
+
+## Command mapping (verified against agentic-cli v0.4.0, 2026-07-02)
+
+`mm perps open`'s real signature was confirmed via `mm perps open --help`:
+
+```
+mm perps open --venue hyperliquid --symbol <BASE> --side long|short \
+  --size <BASE_ASSET_AMOUNT> --leverage <N> --network mainnet|testnet [--dry-run] [--yes]
+```
+
+Two corrections vs the earlier draft:
+- **`--size` is in the BASE ASSET** (human-readable, e.g. `2.4777` SOL), NOT
+  notional USD. The executor converts: `MARGIN_BUDGET × leverage / price`.
+  (The old code emitted notional USD, which would have failed live.)
+- **`--network testnet`** is now always appended; `live` mode adds `--yes` to
+  skip the interactive confirmation in the autonomous loop.
 
 ## Run the demo
 

@@ -45,9 +45,12 @@ export function getExecutionMode(): ExecutionMode {
   return m === "dryrun" || m === "live" ? m : "off";
 }
 
-// Venue + chain config. Hyperliquid is what `mm perps` trades; default chain
-// for spot ops is Base (8453). Overridable via env for testnet/other venues.
+// Venue + network config. Hyperliquid is what `mm perps` trades. NETWORK
+// defaults to `testnet` — a live end-to-end run against MetaMask's real rails
+// with worthless testnet funds, no real capital at risk. Set
+// MM_PERPS_NETWORK=mainnet only for a deliberate real-money run.
 const MM_VENUE = process.env.MM_PERPS_VENUE ?? "hyperliquid";
+const MM_NETWORK = (process.env.MM_PERPS_NETWORK ?? "testnet").toLowerCase() === "mainnet" ? "mainnet" : "testnet";
 const MM_BIN = process.env.MM_BIN ?? "mm";
 
 export interface MmCommand {
@@ -95,7 +98,10 @@ export function buildMmCommand(
   // Symbol normalisation: agent uses "BTCUSDT"/"PEPE/WETH"; perps venues want a
   // bare base symbol (e.g. "BTC"). Strip common quote suffixes / pool notation.
   const base = normaliseSymbol(market.symbol);
-  const size = String(perpsSize(decision.leverage));
+  // `mm perps` wants --size in the BASE ASSET (human-readable, e.g. 0.01 BTC),
+  // NOT notional USD. Convert: notional budget × leverage / price.
+  const size = String(perpsBaseSize(decision.leverage, market.price));
+  const leverage = String(Math.max(1, Math.round(decision.leverage)));
   const args = [
     "perps",
     sub,
@@ -108,7 +114,9 @@ export function buildMmCommand(
     "--size",
     size,
     "--leverage",
-    String(Math.max(1, Math.round(decision.leverage))),
+    leverage,
+    "--network",
+    MM_NETWORK,
     "--json",
   ];
   return {
@@ -128,12 +136,19 @@ function normaliseSymbol(sym: string): string {
   return upper;
 }
 
-// Notional size as a function of conviction (leverage). Deliberately small and
-// fixed-budget — this is a demo of the gate, not a sizing strategy.
-function perpsSize(leverage: number): number {
+// Position size in the BASE ASSET as a function of conviction (leverage) and
+// price. Deliberately small, fixed-budget — this is a demo of the gate, not a
+// sizing strategy. notional = MARGIN_BUDGET × leverage; base size = notional / price.
+// Rounded to 4 dp (fine for testnet). Falls back to a tiny size if price is 0.
+function perpsBaseSize(leverage: number, price: number): number {
   const MARGIN_BUDGET = Number(process.env.MM_MARGIN_BUDGET_USD ?? 100);
   const lev = Math.max(1, Math.round(leverage));
-  return Math.round(MARGIN_BUDGET * lev);
+  const notional = MARGIN_BUDGET * lev;
+  if (!price || price <= 0) return 0.001;
+  const raw = notional / price;
+  // 4 significant-ish decimals; never emit 0 for a real notional.
+  const rounded = Math.round(raw * 1e4) / 1e4;
+  return rounded > 0 ? rounded : 0.0001;
 }
 
 /** Is the `mm` binary installed and authenticated? Cheap, cached per process. */
@@ -262,8 +277,12 @@ export async function executeViaMetaMask(
     );
   }
   try {
-    const { stdout, stderr } = await execFileAsync(cmd.bin, cmd.args, { timeout: 60000 });
-    return result(mode, true, cmd, "executed", (stdout || stderr || "").trim().slice(0, 4000), `✅ ALLOW → executed via MetaMask: ${cmd.pretty}`);
+    // `mm perps open` prompts for confirmation interactively; in an autonomous
+    // loop we must pass --yes. Appended only on the live exec, never on the
+    // read-only quote or the pretty display command.
+    const liveArgs = [...cmd.args, "--yes"];
+    const { stdout, stderr } = await execFileAsync(cmd.bin, liveArgs, { timeout: 60000 });
+    return result(mode, true, cmd, "executed", (stdout || stderr || "").trim().slice(0, 4000), `✅ ALLOW → executed via MetaMask (${MM_NETWORK}): ${cmd.pretty} --yes`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return result(mode, true, cmd, "execute-failed", msg.slice(0, 4000), `Execution via mm failed: ${msg.slice(0, 200)}`);
