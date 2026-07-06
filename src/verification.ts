@@ -15,7 +15,8 @@
 // RV only fires for weak/critical-stake ALLOWs (trust-but-verify).
 // Conservative merge on RV path: BLOCK > UNCERTAIN > ALLOW.
 
-import type { TradeDecision, VerificationResult, Verdict } from "./types.js";
+import type { TradeDecision, VerificationResult, Verdict, MarketSnapshot } from "./types.js";
+import { structuralCheck } from "./structural-check.js";
 
 const SENTINEL_URL = "https://sentinel.thoughtproof.ai/sentinel/verify";
 const RV_URL = "https://api.thoughtproof.ai/v1/check";
@@ -62,14 +63,42 @@ function mapSentinelObjections(raw: unknown): SentinelObjection[] {
 async function callSentinel(
   decision: TradeDecision,
   apiKey: string,
+  situation?: string, // action-free market snapshot (describeMarket) — see body
 ): Promise<NonNullable<VerificationResult["sentinel"]>> {
+  // EVIDENCE must contain the raw market numbers, not just the agent's prose.
+  // trade_execution mode's 3 critical gold steps ALL grade the claim against
+  // `evidence`: (1) cited thresholds met by NUMBERS IN EVIDENCE, (2) directional
+  // claims match PRICE DATA IN EVIDENCE, (3) every justification references DATA
+  // PRESENT IN EVIDENCE. Before this fix, evidence held only Thesis+Reasoning,
+  // so a clean trade whose thesis didn't verbatim restate every snapshot number
+  // failed gold steps 1 & 3 as "unsupported" — a false-positive BLOCK (root cause
+  // of the ~3% ALLOW rate). We prepend the action-free market snapshot (the same
+  // `situation` RV already receives, describeMarket → price, SMA7/30, RSI, vol,
+  // trend) so the grounding check runs against the actual data the agent saw.
+  // `situation` is action-free (no buy/sell/long/short), so it cannot leak the
+  // decision into the evidence and pre-bias the verdict.
+  const marketBlock = situation && situation.trim() ? `Market data (verifier evidence):\n${situation.trim()}\n\n` : "";
   const res = await fetch(SENTINEL_URL, {
     method: "POST",
     headers: { "X-Sentinel-Key": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      claim: decision.action,
-      evidence: `Thesis: ${decision.thesis}\n\nReasoning: ${decision.reasoning}`,
-      mode: "trade_execution",
+      // claim = the ANSWER Sentinel grades. trade_reasoning's step_2 checks
+      // inferential integrity (does the thesis follow from its reasoning?), so
+      // the thesis MUST be in the claim, not only the bare action string.
+      claim: `${decision.action}. Thesis: ${decision.thesis}`,
+      evidence: `${marketBlock}Thesis: ${decision.thesis}\n\nReasoning: ${decision.reasoning}`,
+      // trade_reasoning (ADR-0018), NOT trade_execution. Rationale: a trading
+      // thesis is an argument, not a trace — the "evidence" is the agent's own
+      // reasoning, so demanding literal evidence-grounding always yields "weakly
+      // supported" → CONDITIONAL_ALLOW → UNCERTAIN → the trade dies (drove ~82%
+      // of UNCERTAINs in the CB4A benchmark; and 97% of VTA directional attempts
+      // never executed). trade_reasoning keeps the two FACTUAL gold steps
+      // (thresholds + direction, backstopped by the deterministic cb4a-verify
+      // structural layer) but replaces step_2 with an inferential-integrity check
+      // and promotes UNCERTAIN→ALLOW when only step_2 is marginal. Live A/B
+      // (2026-07-06): clean XLM 2x long UNCERTAIN→ALLOW; bad ETH 2x
+      // UNCERTAIN→BLOCK (genuine defects caught HARDER, not softer).
+      mode: "trade_reasoning",
       tier: "standard",
     }),
   });
@@ -197,22 +226,58 @@ async function callRV(
  * positions before seeing our decision. Use describeMarket(market).
  */
 export async function verifyDecision(
-  decision: TradeDecision,
-  apiKey: string,
-  situation?: string,
-): Promise<VerificationResult> {
-  const start = Date.now();
+    decision: TradeDecision,
+    apiKey: string,
+    situation?: string,
+    market?: MarketSnapshot,
+  ): Promise<VerificationResult> {
+    const start = Date.now();
 
-  // Flat / no-op: nothing irreversible to gate. Treat as ALLOW (no trade anyway).
-  if (decision.side === "flat") {
-    return {
-      route: "sentinel",
-      finalVerdict: "ALLOW",
-      latencyMs: Date.now() - start,
-    };
-  }
+    // Flat / no-op: nothing irreversible to gate. Treat as ALLOW (no trade anyway).
+    if (decision.side === "flat") {
+      return {
+        route: "sentinel",
+        finalVerdict: "ALLOW",
+        latencyMs: Date.now() - start,
+      };
+    }
 
-  const sentinel = await callSentinel(decision, apiKey);
+    // --- Layer 1: deterministic structural check (cb4a-verify pattern) ---
+    // Runs BEFORE the LLM cascade. Two outputs:
+    //   (a) a HARD direction contradiction → BLOCK immediately, never spend the
+    //       Sentinel cascade. This is the binary, unfixable defect the LLM layer
+    //       is unreliable on (an agent claiming "uptrend" while the 7d trend is
+    //       decisively down). Fail-toward-silence: only fires on a high-confidence
+    //       parse beyond a generous tolerance, so it cannot false-block a good trade.
+    //   (b) soft `structural_fact:` flags → prepended to the situation so Sentinel
+    //       (trade_reasoning mode) treats them as authoritative ground truth when
+    //       judging coherence. This is what makes the two-layer gate REAL for the
+    //       trade path, not just a claim.
+    let sentinelSituation = situation;
+    if (market) {
+      const structural = structuralCheck(decision, market);
+      // Direction/magnitude/range deviations are surfaced as `structural_fact:`
+      // evidence lines (authoritative ground truth) and prepended to the
+      // situation Sentinel grades. No deterministic hard-BLOCK: whether a
+      // counter-trend read or a magnitude gap invalidates the thesis is a
+      // JUDGMENT the reasoning layer (Sentinel trade_reasoning), which sees the
+      // full thesis, is the right place to make. Layer 1 proves the facts; Layer
+      // 2 decides. (Steelman 2026-07-06: a det direction hard-block false-blocks
+      // legitimate oversold-bounce / mean-reversion trades.)
+      if (structural.flags.length > 0) {
+        const factBlock = structural.flags.map((f: { evidenceLine: string }) => f.evidenceLine).join("\n");
+        sentinelSituation = situation ? `${factBlock}\n\n${situation}` : factBlock;
+      }
+    } else {
+      // Fail-open is a hidden gap: Layer 1 is silently skipped when no snapshot
+      // is passed. main.ts always passes `market`, so this should never fire in
+      // production — log loudly if it does (Steelman 2026-07-06, finding 3).
+      console.warn(
+        `⚠️  structural check SKIPPED for ${decision.symbol} — no market snapshot passed to verifyDecision (Layer 1 bypassed).`,
+      );
+    }
+
+    const sentinel = await callSentinel(decision, apiKey, sentinelSituation);
 
   // --- Routing v3: UNCERTAIN/BLOCK stay Sentinel-final ---
   // UNCERTAIN → return with objections for Re-Plan Loop.
@@ -230,8 +295,13 @@ export async function verifyDecision(
   }
 
   // --- ALLOW: trust-but-verify for high-stakes ---
+  // RV escalation can be disabled entirely (RV_ENABLED=false) — e.g. for a
+  // Sentinel-only demo that showcases the pre-execution gate + Re-Plan Loop
+  // without the slower (~50s) RV adversarial panel. When off, a Sentinel ALLOW
+  // is always final.
+  const rvEnabled = (process.env.RV_ENABLED ?? "true").toLowerCase() !== "false";
   const stakeLevel = decision.stakeLevel ?? "high";
-  const escalateToRv = (() => {
+  const escalateToRv = rvEnabled && (() => {
     // Critical stake: mandatory RV verification on any ALLOW
     if (stakeLevel === "critical") return true;
     // High stake: escalate if Sentinel's confidence is below threshold
