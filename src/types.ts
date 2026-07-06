@@ -85,7 +85,7 @@ export interface TradeDecision {
 
 /** Result from a ThoughtProof verification (Sentinel and/or RV). */
 export interface VerificationResult {
-  route: "sentinel" | "rv" | "pipeline";
+  route: "sentinel" | "rv" | "pipeline" | "structural";
   finalVerdict: Verdict;
   /**
    * Fail-closed semantics: ALLOW => execute (simulated). BLOCK or UNCERTAIN => do NOT trade.
