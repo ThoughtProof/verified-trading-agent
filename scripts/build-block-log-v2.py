@@ -60,6 +60,10 @@ def build_row(d, persona='main'):
     # Sentinel reason as backup objection
     sentinel_reason = sent.get('reason', '')
 
+    # MetaMask execution layer (live testnet fills via mm CLI). status values:
+    # executed (real fill) / execute-failed / blocked-before-mm / quoted / command-built
+    mm = d.get('metamask') or {}
+
     return {
         'ts': d.get('timestamp', ''),
         'cycle': d.get('cycle', 0),
@@ -77,14 +81,17 @@ def build_row(d, persona='main'):
         'rvVerdict': rv.get('verdict', ''),
         'rvConf': rv.get('confidence', 0),
         'objections': objections,
-        'replanAction': replan.get('action', ''),
-        'replanThesis': replan.get('thesis', ''),
+        'replanResolution': replan.get('resolution', ''),
+        'replanFrom': ((replan.get('original') or {}).get('decision') or {}).get('action', ''),
         'cfPnl': cf.get('pnl', None),
         'cfOutcome': cf.get('outcome', ''),
         'cfStatus': cf.get('status', ''),
         'claimHash': sent.get('attestation', {}).get('claimHash', ''),
         'evidenceHash': sent.get('attestation', {}).get('evidenceHash', ''),
         'price': mkt.get('price', 0),
+        'mmStatus': mm.get('status', ''),
+        'mmMode': mm.get('mode', ''),
+        'mmNote': (mm.get('note') or '')[:300],
     }
 
 def aggregate_objections(rows):
@@ -103,6 +110,7 @@ def generate_html(all_rows):
     blocks = [r for r in all_rows if r['verdict'] in ('BLOCK', 'UNCERTAIN')]
     allows = [r for r in all_rows if r['verdict'] == 'ALLOW']
     flat = [r for r in all_rows if r['side'] == 'flat']
+    executed = [r for r in all_rows if r.get('mmStatus') == 'executed']
 
     top_objections = aggregate_objections(all_rows)
 
@@ -180,19 +188,20 @@ footer a{{color:var(--blu);text-decoration:none}}
 <div class="wrap">
   <div class="header">
     <h1>Verified Trading Agent — Decision Log</h1>
-    <p class="sub">Autonomous agent (Kimi K2.6) scans crypto markets and proposes leveraged trades. <b>ThoughtProof verifies the reasoning</b> before execution. Every decision — allowed, blocked, or uncertain — with structured objections and re-plan outcomes.</p>
+    <p class="sub">Autonomous agent (Kimi K2.6) scans crypto markets and proposes leveraged trades. <b>ThoughtProof verifies the reasoning</b> before execution. Allowed orders execute for real via the MetaMask Agentic CLI (<code>mm perps</code>) on Hyperliquid testnet — every decision shown here, allowed, blocked, or uncertain, with structured objections and re-plan outcomes. Log starts 2026-07-06 (current gate + live mm execution).</p>
   </div>
 
   <div class="stats">
     <div class="stat"><div class="n">{total}</div><div class="l">Decisions verified</div></div>
     <div class="stat"><div class="n">{len(blocks)}</div><div class="l">Blocked / Uncertain</div></div>
     <div class="stat"><div class="n">{len(allows)}</div><div class="l">Allowed</div></div>
+    <div class="stat"><div class="n">{len(executed)}</div><div class="l">Executed on-venue (mm, testnet)</div></div>
     <div class="stat"><div class="n">{len(flat)}</div><div class="l">Stayed flat</div></div>
-    <div class="stat"><div class="n">{len([r for r in all_rows if r['replanAction']])}</div><div class="l">Re-plans triggered</div></div>
+    <div class="stat"><div class="n">{len([r for r in all_rows if r['replanResolution']])}</div><div class="l">Re-plans triggered</div></div>
   </div>
 
   <div class="disclaimer">
-    <b>What this shows.</b> RV is a <b>reasoning-integrity check, not a trading-alpha model</b>. It blocks decisions when the <i>reasoning</i> is unsound — hallucinated indicators, invented levels, contradicted data. Whether the market then happens to move favorably is orthogonal to whether the reasoning was defensible. Counterfactuals are paper-trade simulations.
+    <b>What this shows.</b> Sentinel is a <b>pre-execution reasoning check, not a trading-alpha model</b>. It gates each order before signature and blocks when the <i>reasoning</i> is unsound — hallucinated indicators, invented levels, contradicted data. On a soft block it feeds the objections back to the agent for one re-plan; on a clean read it allows and the order executes via <code>mm perps</code> on Hyperliquid testnet. Whether the market then moves favorably is orthogonal to whether the reasoning was defensible — this log measures reasoning integrity, not returns.
   </div>
 
   <div class="timeline-section">
@@ -334,9 +343,11 @@ function showDetail(idx,tr) {{
   }}
 
   let replanHTML = '';
-  if (r.replanAction) {{
-    replanHTML = '<div class="replan-box"><h5>↻ Re-Plan Response</h5><p><strong>'+esc(r.replanAction)+'</strong></p>' +
-      (r.replanThesis ? '<p style="font-style:italic">'+esc(r.replanThesis)+'</p>' : '') + '</div>';
+  if (r.replanResolution) {{
+    const label = {{'revised-allowed':'revised → ALLOW','revised-blocked':'revised → BLOCK','flat':'stood down → flat'}}[r.replanResolution] || r.replanResolution;
+    replanHTML = '<div class="replan-box"><h5>↻ Re-Plan Response</h5>' +
+      (r.replanFrom ? '<p>original: <strong>'+esc(r.replanFrom)+'</strong></p>' : '') +
+      '<p>outcome: <strong>'+esc(label)+'</strong></p></div>';
   }}
 
   let attHTML = '';
@@ -364,6 +375,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', nargs='*', default=None)
     parser.add_argument('--output', default=None)
+    # Public page shows only the CURRENT system: decisions since the two-layer-gate
+    # + mm-execution fixes went live (PRs #2-#5 merged 2026-07-06 ~10:40 UTC, agent
+    # process restarted on new code 11:03 UTC). Everything before ran the old
+    # trade_execution gate (~3% ALLOW) — calibration history, not the product.
+    # Pass --since '' to build the full-history version.
+    parser.add_argument('--since', default='2026-07-06T11:03',
+                        help="ISO timestamp cutoff (UTC). Rows older than this are dropped. '' = no cutoff.")
     args = parser.parse_args()
 
     if args.input:
@@ -389,6 +407,10 @@ def main():
 
     # Sort by timestamp desc
     all_rows.sort(key=lambda r: r['ts'], reverse=True)
+    if args.since:
+        before = len(all_rows)
+        all_rows = [r for r in all_rows if r['ts'] >= args.since]
+        print(f'  Cutoff {args.since}: {before} → {len(all_rows)} decisions (current system only)')
     print(f'  Total: {len(all_rows)} decisions')
 
     html_content = generate_html(all_rows)
