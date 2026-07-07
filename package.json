@@ -23,6 +23,7 @@
   ],
   "dependencies": {
     "@pot-sdk2/polymarket": "^0.1.0",
+    "@thoughtproof/fact-check-core": "github:ThoughtProof/fact-check-core",
     "dotenv": "^16.4.5",
     "ethers": "^6.16.0"
   },
