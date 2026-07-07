@@ -17,6 +17,7 @@ import { recordDecision, computeStats, readDecisions, LOG_PATH } from "./trackin
 import { ReputationWriter } from "./reputation.js";
 import { runEnrichments, logEnrichments } from "./enrichments.js";
 import { executeViaMetaMask, getExecutionMode, type ExecutionResult } from "./metamask-executor.js";
+import { runObjectionGate } from "./objection-gate.js";
 import type { DecisionRecord, MarketSnapshot } from "./types.js";
 
 const MOONSHOT_API_KEY = process.env.MOONSHOT_API_KEY ?? "";
@@ -200,7 +201,21 @@ async function runCycle(cycle: number, market: MarketSnapshot, reputation: Reput
       // The FINAL attempt becomes the record's decision/verification.
       decision = revised.decision;
       verification = revisedVerification;
-      replan = { original, resolution };
+
+      // Objection-binding gate (numeric classes): did the revision satisfy the
+      // HOLD's falsifiable predicate, judged on a value MEASURED from the snapshot
+      // (not the agent's revised text)? null when the HOLD had no numeric objection.
+      const objectionGate = market
+        ? runObjectionGate(original.decision, revised.decision, market) ?? undefined
+        : undefined;
+      if (objectionGate) {
+        console.log(
+          `   ⛓  objection-gate: ${objectionGate.checked.length} predicate-gated — ` +
+            `allSatisfied=${objectionGate.allSatisfied} ` +
+            `(${objectionGate.checked.map((c) => `${c.kind}:${c.satisfied}`).join(", ")})`,
+        );
+      }
+      replan = { original, resolution, objectionGate };
     } catch (err) {
       console.error(`   ⚠️  Re-plan failed (keeping original block): ${err instanceof Error ? err.message : err}`);
     }

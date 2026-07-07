@@ -184,6 +184,20 @@ export interface DecisionRecord {
     original: { decision: TradeDecision; verification: VerificationResult };
     /** How the revision resolved: did the agent stand down, size down, or still get blocked? */
     resolution: "flat" | "revised-allowed" | "revised-blocked";
+    /** Objection-binding gate result (numeric-class objections only): for each
+     *  predicate-gated objection from the HOLD, whether the revised plan's
+     *  independently-MEASURED value satisfies it. Absent when no numeric objection
+     *  was present. The measured value comes from the fact-checker (same snapshot),
+     *  never from the agent's revised text. Fuzzy objections stay with fresh judgment. */
+    objectionGate?: {
+      checked: Array<{
+        kind: "direction" | "magnitude" | "range_position";
+        satisfied: boolean;
+        reason: string;
+      }>;
+      /** true only if ALL predicate-gated objections are satisfied by measured values. */
+      allSatisfied: boolean;
+    };
   };
   /** pot-sdk enrichments (polymarket, friend, graph, pay). */
   enrichments?: EnrichmentResults;
