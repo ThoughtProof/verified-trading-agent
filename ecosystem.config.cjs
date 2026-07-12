@@ -40,10 +40,9 @@ module.exports = {
       merge_logs: true,
       env: {
         NODE_ENV: "production",
-        // Recovery posture (2026-07-12): exercise the full live Sentinel +
-        // read-only mm quote path first. Promotion to `live` is a separate,
-        // explicit operator action after the restarted process proves stable.
-        MM_EXECUTION_MODE: "dryrun",
+        // Explicit operator approval received 2026-07-12: execute ALLOWed trades
+        // through MetaMask on Hyperliquid TESTNET. Mainnet remains impossible here.
+        MM_EXECUTION_MODE: "live",
         MM_PERPS_NETWORK: "testnet",
         // The Binance top-mover scan repeatedly selected symbols that do not
         // exist on Hyperliquid testnet (INVALID_SYMBOL). Constrain the recovery
