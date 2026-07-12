@@ -40,6 +40,17 @@ module.exports = {
       merge_logs: true,
       env: {
         NODE_ENV: "production",
+        // Recovery posture (2026-07-12): exercise the full live Sentinel +
+        // read-only mm quote path first. Promotion to `live` is a separate,
+        // explicit operator action after the restarted process proves stable.
+        MM_EXECUTION_MODE: "dryrun",
+        MM_PERPS_NETWORK: "testnet",
+        // The Binance top-mover scan repeatedly selected symbols that do not
+        // exist on Hyperliquid testnet (INVALID_SYMBOL). Constrain the recovery
+        // line to markets verified live via `mm perps markets`.
+        SCAN_ENABLED: "false",
+        DEX_ENABLED: "false",
+        SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT",
       },
     },
     {

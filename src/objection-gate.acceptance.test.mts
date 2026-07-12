@@ -7,17 +7,12 @@
 // supplies its claim, checked against that measured fact. The agent cannot pass by
 // asserting a number — only by no longer contradicting the measured data.
 //
-// Run: npx tsx src/objection-gate.acceptance.test.mts
+// Run: npx vitest run src/objection-gate.acceptance.test.mts
 
 import assert from "node:assert/strict";
+import { describe, it } from "vitest";
 import { runObjectionGate } from "./objection-gate.js";
 import type { TradeDecision, MarketSnapshot } from "./types.js";
-
-let passed = 0;
-const t = (name: string, fn: () => void) => {
-  try { fn(); passed++; console.log(`  ok  ${name}`); }
-  catch (e) { console.error(`  FAIL ${name}\n     ${(e as Error).message}`); process.exitCode = 1; }
-};
 
 // Frozen snapshot: verified 24h move ~ +8%. A thesis claiming ~+8% is consistent;
 // a thesis claiming +21.8% overstates it (magnitude objection).
@@ -28,8 +23,9 @@ const market: MarketSnapshot = {
 };
 const mk = (thesis: string): TradeDecision => ({ side: "long", leverage: 1, thesis, reasoning: "" } as unknown as TradeDecision);
 
+describe("objection-binding acceptance", () => {
 // ── THE DISCRIMINATION TEST — the gate must tell responsive from non-responsive ──
-t("responsive revision (drops the overstated claim) → satisfied", () => {
+it("responsive revision (drops the overstated claim) → satisfied", () => {
   const original = mk("strong breakout, up 21.8% parabolic move");   // overstates → magnitude flag
   const revised = mk("modest continuation, holding above support");   // no numeric overstatement
   const g = runObjectionGate(original, revised, market);
@@ -39,7 +35,7 @@ t("responsive revision (drops the overstated claim) → satisfied", () => {
   assert.equal(mag!.satisfied, true, "revision dropped the overstated claim → should be satisfied");
 });
 
-t("NON-responsive revision (still overstates) → NOT satisfied", () => {
+it("NON-responsive revision (still overstates) → NOT satisfied", () => {
   const original = mk("up 21.8% parabolic move");   // magnitude flag
   const revised = mk("still up 21.8%, doubling down"); // STILL overstates the same way
   const g = runObjectionGate(original, revised, market);
@@ -51,7 +47,7 @@ t("NON-responsive revision (still overstates) → NOT satisfied", () => {
 
 // ── THE ANTI-NO-OP GUARD: the two above MUST differ. If they don't, the gate is
 //    the trivial-true no-op and this fails loudly. ──
-t("gate discriminates: responsive and non-responsive give DIFFERENT results", () => {
+it("gate discriminates: responsive and non-responsive give DIFFERENT results", () => {
   const original = mk("up 21.8% breakout");
   const responsive = runObjectionGate(original, mk("modest, near fair value"), market);
   const nonResponsive = runObjectionGate(original, mk("up 21.8% still"), market);
@@ -63,7 +59,7 @@ t("gate discriminates: responsive and non-responsive give DIFFERENT results", ()
 // ── Fact still measured from snapshot, not asserted: a revision claiming a false
 //    LOW number must not pass just by asserting it. It passes only by not raising
 //    the flag against the measured +8%. ──
-t("agent cannot pass by asserting a convenient number — only by not contradicting the fact", () => {
+it("agent cannot pass by asserting a convenient number — only by not contradicting the fact", () => {
   const original = mk("up 21.8%");
   // Revision claims "+8%" — which happens to match the fact, so it raises no flag → responsive.
   // This is correct: it stopped overstating. The point is it's checked AGAINST the
@@ -73,9 +69,8 @@ t("agent cannot pass by asserting a convenient number — only by not contradict
   assert.equal(mag!.satisfied, true);
 });
 
-t("no numeric objection in HOLD → gate returns null", () => {
+it("no numeric objection in HOLD → gate returns null", () => {
   const g = runObjectionGate(mk("feels bullish, good energy"), mk("still bullish"), market);
   assert.equal(g, null);
 });
-
-console.log(`\n${passed} passed`);
+});
